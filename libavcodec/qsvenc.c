@@ -348,15 +348,34 @@ static int select_rc_mode(AVCodecContext *avctx, QSVEncContext *q)
     return 0;
 }
 
-static int rc_supported(QSVEncContext *q)
+static int check_enc_param(AVCodecContext *avctx, QSVEncContext *q)
 {
     mfxVideoParam param_out = { .mfx.CodecId = q->param.mfx.CodecId };
     mfxStatus ret;
 
+#define UNMATCH(x) (param_out.mfx.x != q->param.mfx.x)
+
     ret = MFXVideoENCODE_Query(q->session, &q->param, &param_out);
-    if (ret < 0 ||
-        param_out.mfx.RateControlMethod != q->param.mfx.RateControlMethod)
+
+    if (ret < 0) {
+        if (UNMATCH(CodecId))
+            av_log(avctx, AV_LOG_ERROR, "Current codec type is unsupported\n");
+        if (UNMATCH(CodecProfile))
+            av_log(avctx, AV_LOG_ERROR, "Current profile is unsupported\n");
+        if (UNMATCH(RateControlMethod))
+            av_log(avctx, AV_LOG_ERROR, "Selected ratecontrol mode is unsupported\n");
+        if (UNMATCH(LowPower))
+              av_log(avctx, AV_LOG_ERROR, "Low power mode is unsupported\n");
+        if (UNMATCH(FrameInfo.FrameRateExtN) || UNMATCH(FrameInfo.FrameRateExtD))
+              av_log(avctx, AV_LOG_ERROR, "Current frame rate is unsupported\n");
+        if (UNMATCH(FrameInfo.PicStruct))
+              av_log(avctx, AV_LOG_ERROR, "Current picture structure is unsupported\n");
+        if (UNMATCH(FrameInfo.Width) || UNMATCH(FrameInfo.Height))
+              av_log(avctx, AV_LOG_ERROR, "Current resolution is unsupported\n");
+        if (UNMATCH(FrameInfo.FourCC))
+              av_log(avctx, AV_LOG_ERROR, "Current pixel format is unsupported\n");
         return 0;
+    }
     return 1;
 }
 
@@ -576,6 +595,7 @@ FF_ENABLE_DEPRECATION_WARNINGS
             if (q->recovery_point_sei >= 0)
                 q->extco.RecoveryPointSEI = q->recovery_point_sei ? MFX_CODINGOPTION_ON : MFX_CODINGOPTION_OFF;
             q->extco.MaxDecFrameBuffering = q->max_dec_frame_buffering;
+            q->extco.AUDelimiter          = q->aud ? MFX_CODINGOPTION_ON : MFX_CODINGOPTION_OFF;
         }
 
         q->extparam_internal[q->nb_extparam_internal++] = (mfxExtBuffer *)&q->extco;
@@ -632,12 +652,26 @@ FF_ENABLE_DEPRECATION_WARNINGS
             q->extparam_internal[q->nb_extparam_internal++] = (mfxExtBuffer *)&q->extco2;
         }
 #endif
+#if QSV_HAVE_MF
+        if (avctx->codec_id == AV_CODEC_ID_H264) {
+            mfxVersion    ver;
+            ret = MFXQueryVersion(q->session,&ver);
+            if (ret >= MFX_ERR_NONE && QSV_RUNTIME_VERSION_ATLEAST(ver, 1, 25)) {
+                q->extmfp.Header.BufferId     = MFX_EXTBUFF_MULTI_FRAME_PARAM;
+                q->extmfp.Header.BufferSz     = sizeof(q->extmfp);
+
+                q->extmfp.MFMode = q->mfmode;
+                av_log(avctx,AV_LOG_VERBOSE,"MFMode:%d\n", q->extmfp.MFMode);
+                q->extparam_internal[q->nb_extparam_internal++] = (mfxExtBuffer *)&q->extmfp;
+            }
+        }
+#endif
     }
 
-    if (!rc_supported(q)) {
+    if (!check_enc_param(avctx,q)) {
         av_log(avctx, AV_LOG_ERROR,
-               "Selected ratecontrol mode is not supported by the QSV "
-               "runtime. Choose a different mode.\n");
+               "some encoding parameters are not supported by the QSV "
+               "runtime. Please double check the input parameters.\n");
         return AVERROR(ENOSYS);
     }
 

@@ -30,6 +30,7 @@
 #define UNCHECKED_BITSTREAM_READER 1
 
 #include "libavutil/intreadwrite.h"
+#include "libavutil/pixdesc.h"
 #include "avcodec.h"
 #include "bswapdsp.h"
 #include "bytestream.h"
@@ -912,6 +913,7 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
 static av_cold int decode_init(AVCodecContext *avctx)
 {
     UtvideoContext * const c = avctx->priv_data;
+    int h_shift, v_shift;
 
     c->avctx = avctx;
 
@@ -947,14 +949,17 @@ static av_cold int decode_init(AVCodecContext *avctx)
         break;
     case MKTAG('U', 'Q', 'Y', '2'):
         c->planes      = 3;
+        c->pro         = 1;
         avctx->pix_fmt = AV_PIX_FMT_YUV422P10;
         break;
     case MKTAG('U', 'Q', 'R', 'G'):
         c->planes      = 3;
+        c->pro         = 1;
         avctx->pix_fmt = AV_PIX_FMT_GBRP10;
         break;
     case MKTAG('U', 'Q', 'R', 'A'):
         c->planes      = 4;
+        c->pro         = 1;
         avctx->pix_fmt = AV_PIX_FMT_GBRAP10;
         break;
     case MKTAG('U', 'L', 'H', '0'):
@@ -1012,6 +1017,13 @@ static av_cold int decode_init(AVCodecContext *avctx)
         return AVERROR_INVALIDDATA;
     }
 
+    av_pix_fmt_get_chroma_sub_sample(avctx->pix_fmt, &h_shift, &v_shift);
+    if ((avctx->width  & ((1<<h_shift)-1)) ||
+        (avctx->height & ((1<<v_shift)-1))) {
+        avpriv_request_sample(avctx, "Odd dimensions");
+        return AVERROR_PATCHWELCOME;
+    }
+
     if (c->pack && avctx->extradata_size >= 16) {
         av_log(avctx, AV_LOG_DEBUG, "Encoder version %d.%d.%d.%d\n",
                avctx->extradata[3], avctx->extradata[2],
@@ -1022,7 +1034,7 @@ static av_cold int decode_init(AVCodecContext *avctx)
         if (c->compression != 2)
             avpriv_request_sample(avctx, "Unknown compression type");
         c->slices      = avctx->extradata[9] + 1;
-    } else if (avctx->extradata_size >= 16) {
+    } else if (!c->pro && avctx->extradata_size >= 16) {
         av_log(avctx, AV_LOG_DEBUG, "Encoder version %d.%d.%d.%d\n",
                avctx->extradata[3], avctx->extradata[2],
                avctx->extradata[1], avctx->extradata[0]);
@@ -1037,14 +1049,13 @@ static av_cold int decode_init(AVCodecContext *avctx)
         c->slices      = (c->flags >> 24) + 1;
         c->compression = c->flags & 1;
         c->interlaced  = c->flags & 0x800;
-    } else if (avctx->extradata_size == 8) {
+    } else if (c->pro && avctx->extradata_size == 8) {
         av_log(avctx, AV_LOG_DEBUG, "Encoder version %d.%d.%d.%d\n",
                avctx->extradata[3], avctx->extradata[2],
                avctx->extradata[1], avctx->extradata[0]);
         av_log(avctx, AV_LOG_DEBUG, "Original format %"PRIX32"\n",
                AV_RB32(avctx->extradata + 4));
         c->interlaced  = 0;
-        c->pro         = 1;
         c->frame_info_size = 4;
     } else {
         av_log(avctx, AV_LOG_ERROR,

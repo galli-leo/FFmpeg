@@ -20,6 +20,7 @@
 
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
+#include "libavutil/bprint.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/opt.h"
 #include "libavutil/parseutils.h"
@@ -396,18 +397,18 @@ static int concat_read_close(AVFormatContext *avf)
 static int concat_read_header(AVFormatContext *avf)
 {
     ConcatContext *cat = avf->priv_data;
-    uint8_t buf[4096];
+    AVBPrint bp;
     uint8_t *cursor, *keyword;
-    int ret, line = 0, i;
+    int line = 0, i;
     unsigned nb_files_alloc = 0;
     ConcatFile *file = NULL;
-    int64_t time = 0;
+    int64_t ret, time = 0;
 
-    while (1) {
-        if ((ret = ff_get_line(avf->pb, buf, sizeof(buf))) <= 0)
-            break;
+    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+
+    while ((ret = ff_read_line_to_bprint_overwrite(avf->pb, &bp)) >= 0) {
         line++;
-        cursor = buf;
+        cursor = bp.str;
         keyword = get_keyword(&cursor);
         if (!*keyword || *keyword == '#')
             continue;
@@ -483,7 +484,7 @@ static int concat_read_header(AVFormatContext *avf)
             FAIL(AVERROR_INVALIDDATA);
         }
     }
-    if (ret < 0)
+    if (ret != AVERROR_EOF && ret < 0)
         goto fail;
     if (!cat->nb_files)
         FAIL(AVERROR_INVALIDDATA);
@@ -509,9 +510,11 @@ static int concat_read_header(AVFormatContext *avf)
                                                MATCH_ONE_TO_ONE;
     if ((ret = open_file(avf, 0)) < 0)
         goto fail;
+    av_bprint_finalize(&bp, NULL);
     return 0;
 
 fail:
+    av_bprint_finalize(&bp, NULL);
     concat_read_close(avf);
     return ret;
 }
@@ -683,6 +686,7 @@ static int concat_read_packet(AVFormatContext *avf, AVPacket *pkt)
         }
     }
 
+    pkt->stream_index = cs->out_stream_index;
     return ret;
 }
 

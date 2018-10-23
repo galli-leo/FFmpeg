@@ -41,7 +41,8 @@ const enum AVPixelFormat ff_nvenc_pix_fmts[] = {
     AV_PIX_FMT_NV12,
     AV_PIX_FMT_P010,
     AV_PIX_FMT_YUV444P,
-    AV_PIX_FMT_YUV444P16,
+    AV_PIX_FMT_P016,      // Truncated to 10bits
+    AV_PIX_FMT_YUV444P16, // Truncated to 10bits
     AV_PIX_FMT_0RGB32,
     AV_PIX_FMT_0BGR32,
     AV_PIX_FMT_CUDA,
@@ -52,6 +53,7 @@ const enum AVPixelFormat ff_nvenc_pix_fmts[] = {
 };
 
 #define IS_10BIT(pix_fmt)  (pix_fmt == AV_PIX_FMT_P010    || \
+                            pix_fmt == AV_PIX_FMT_P016    || \
                             pix_fmt == AV_PIX_FMT_YUV444P16)
 
 #define IS_YUV444(pix_fmt) (pix_fmt == AV_PIX_FMT_YUV444P || \
@@ -117,10 +119,18 @@ static int nvenc_print_error(void *log_ctx, NVENCSTATUS err,
 
 static void nvenc_print_driver_requirement(AVCodecContext *avctx, int level)
 {
-#if defined(_WIN32) || defined(__CYGWIN__)
-    const char *minver = "378.66";
+#if NVENCAPI_CHECK_VERSION(8, 1)
+# if defined(_WIN32) || defined(__CYGWIN__)
+    const char *minver = "390.77";
+# else
+    const char *minver = "390.25";
+# endif
 #else
+# if defined(_WIN32) || defined(__CYGWIN__)
+    const char *minver = "378.66";
+# else
     const char *minver = "378.13";
+# endif
 #endif
     av_log(avctx, level, "The minimum required Nvidia driver for nvenc is %s or newer\n", minver);
 }
@@ -367,6 +377,22 @@ static int nvenc_check_capabilities(AVCodecContext *avctx)
         av_log(avctx, AV_LOG_VERBOSE, "CABAC entropy coding not supported\n");
         return AVERROR(ENOSYS);
     }
+
+#ifdef NVENC_HAVE_BFRAME_REF_MODE
+    ret = nvenc_check_cap(avctx, NV_ENC_CAPS_SUPPORT_BFRAME_REF_MODE);
+    if (ctx->b_ref_mode == NV_ENC_BFRAME_REF_MODE_EACH && ret != 1) {
+        av_log(avctx, AV_LOG_VERBOSE, "Each B frame as reference is not supported\n");
+        return AVERROR(ENOSYS);
+    } else if (ctx->b_ref_mode != NV_ENC_BFRAME_REF_MODE_DISABLED && ret == 0) {
+        av_log(avctx, AV_LOG_VERBOSE, "B frames as references are not supported\n");
+        return AVERROR(ENOSYS);
+    }
+#else
+    if (ctx->b_ref_mode != 0) {
+        av_log(avctx, AV_LOG_VERBOSE, "B frames as references need SDK 8.1 at build time\n");
+        return AVERROR(ENOSYS);
+    }
+#endif
 
     return 0;
 }
@@ -986,6 +1012,10 @@ static av_cold int nvenc_setup_h264_config(AVCodecContext *avctx)
     if (ctx->coder >= 0)
         h264->entropyCodingMode = ctx->coder;
 
+#ifdef NVENC_HAVE_BFRAME_REF_MODE
+    h264->useBFramesAsRef = ctx->b_ref_mode;
+#endif
+
     return 0;
 }
 
@@ -1219,6 +1249,7 @@ static NV_ENC_BUFFER_FORMAT nvenc_map_buffer_format(enum AVPixelFormat pix_fmt)
     case AV_PIX_FMT_NV12:
         return NV_ENC_BUFFER_FORMAT_NV12_PL;
     case AV_PIX_FMT_P010:
+    case AV_PIX_FMT_P016:
         return NV_ENC_BUFFER_FORMAT_YUV420_10BIT;
     case AV_PIX_FMT_YUV444P:
         return NV_ENC_BUFFER_FORMAT_YUV444_PL;

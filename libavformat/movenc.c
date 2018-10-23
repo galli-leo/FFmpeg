@@ -143,6 +143,22 @@ static int co64_required(const MOVTrack *track)
     return 0;
 }
 
+static int is_cover_image(const AVStream *st)
+{
+    /* Eg. AV_DISPOSITION_ATTACHED_PIC | AV_DISPOSITION_TIMED_THUMBNAILS
+     * is encoded as sparse video track */
+    return st && st->disposition == AV_DISPOSITION_ATTACHED_PIC;
+}
+
+static int rtp_hinting_needed(const AVStream *st)
+{
+    /* Add hint tracks for each real audio and video stream */
+    if (is_cover_image(st))
+        return 0;
+    return st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO ||
+           st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO;
+}
+
 /* Chunk offset atom */
 static int mov_write_stco_tag(AVIOContext *pb, MOVTrack *track)
 {
@@ -384,7 +400,7 @@ static int parse_eac3(MOVMuxContext *mov, const AVPacket *pkt, MOVTrack *track, 
     if (avpriv_ac3_parse_header(&hdr, pkt->data, pkt->size) < 0) {
         /* drop the packets until we see a good one */
         if (!track->entry) {
-            av_log(mov, AV_LOG_WARNING, "Dropping invalid packet from start of the stream\n");
+            av_log(mov->fc, AV_LOG_WARNING, "Dropping invalid packet from start of the stream\n");
             ret = 0;
         } else
             ret = AVERROR_INVALIDDATA;
@@ -413,12 +429,18 @@ static int parse_eac3(MOVMuxContext *mov, const AVPacket *pkt, MOVTrack *track, 
 
             if (hdr->substreamid == info->num_ind_sub + 1) {
                 //info->num_ind_sub++;
-                avpriv_request_sample(track->par, "Multiple independent substreams");
+                avpriv_request_sample(mov->fc, "Multiple independent substreams");
                 ret = AVERROR_PATCHWELCOME;
                 goto end;
             } else if (hdr->substreamid < info->num_ind_sub ||
                        hdr->substreamid == 0 && info->substream[0].bsid) {
                 info->ec3_done = 1;
+                goto end;
+            }
+        } else {
+            if (hdr->substreamid != 0) {
+                avpriv_request_sample(mov->fc, "Multiple non EAC3 independent substreams");
+                ret = AVERROR_PATCHWELCOME;
                 goto end;
             }
         }
@@ -508,10 +530,7 @@ static int handle_eac3(MOVMuxContext *mov, AVPacket *pkt, MOVTrack *track)
         if (info->num_blocks != 6)
             return ret;
         av_packet_unref(pkt);
-        ret = av_packet_ref(pkt, &info->pkt);
-        if (ret < 0)
-            return ret;
-        av_packet_unref(&info->pkt);
+        av_packet_move_ref(pkt, &info->pkt);
         info->num_blocks = 0;
     }
 
@@ -1011,7 +1030,7 @@ static int mov_write_audio_tag(AVFormatContext *s, AVIOContext *pb, MOVMuxContex
     uint32_t tag = track->tag;
 
     if (track->mode == MODE_MOV) {
-        if (track->timescale > UINT16_MAX) {
+        if (track->timescale > UINT16_MAX || !track->par->channels) {
             if (mov_get_lpcm_flags(track->par->codec_id))
                 tag = AV_RL32("lpcm");
             version = 2;
@@ -1560,9 +1579,19 @@ static int mov_get_codec_tag(AVFormatContext *s, MOVTrack *track)
     return tag;
 }
 
+static const AVCodecTag codec_cover_image_tags[] = {
+    { AV_CODEC_ID_MJPEG,  0xD },
+    { AV_CODEC_ID_PNG,    0xE },
+    { AV_CODEC_ID_BMP,    0x1B },
+    { AV_CODEC_ID_NONE, 0 },
+};
+
 static int mov_find_codec_tag(AVFormatContext *s, MOVTrack *track)
 {
     int tag;
+
+    if (is_cover_image(track->st))
+        return ff_codec_get_tag(codec_cover_image_tags, track->par->codec_id);
 
     if (track->mode == MODE_MP4 || track->mode == MODE_PSP)
         tag = track->par->codec_tag;
@@ -3039,7 +3068,7 @@ static int mov_write_track_udta_tag(AVIOContext *pb, MOVMuxContext *mov,
     if (ret < 0)
         return ret;
 
-    if (mov->mode & MODE_MP4)
+    if (mov->mode & (MODE_MP4|MODE_MOV))
         mov_write_track_metadata(pb_buf, st, "name", "title");
 
     if ((size = avio_close_dyn_buf(pb_buf, &buf)) > 0) {
@@ -3428,6 +3457,33 @@ static int mov_write_int8_metadata(AVFormatContext *s, AVIOContext *pb,
     return size;
 }
 
+static int mov_write_covr(AVIOContext *pb, AVFormatContext *s)
+{
+    MOVMuxContext *mov = s->priv_data;
+    int64_t pos = 0;
+    int i;
+
+    for (i = 0; i < s->nb_streams; i++) {
+        MOVTrack *trk = &mov->tracks[i];
+
+        if (!is_cover_image(trk->st) || trk->cover_image.size <= 0)
+            continue;
+
+        if (!pos) {
+            pos = avio_tell(pb);
+            avio_wb32(pb, 0);
+            ffio_wfourcc(pb, "covr");
+        }
+        avio_wb32(pb, 16 + trk->cover_image.size);
+        ffio_wfourcc(pb, "data");
+        avio_wb32(pb, trk->tag);
+        avio_wb32(pb , 0);
+        avio_write(pb, trk->cover_image.data, trk->cover_image.size);
+    }
+
+    return pos ? update_size(pb, pos) : 0;
+}
+
 /* iTunes meta data list */
 static int mov_write_ilst_tag(AVIOContext *pb, MOVMuxContext *mov,
                               AVFormatContext *s)
@@ -3447,7 +3503,7 @@ static int mov_write_ilst_tag(AVIOContext *pb, MOVMuxContext *mov,
     }
     mov_write_string_metadata(s, pb, "\251cmt", "comment"  , 1);
     mov_write_string_metadata(s, pb, "\251gen", "genre"    , 1);
-    mov_write_string_metadata(s, pb, "\251cpy", "copyright", 1);
+    mov_write_string_metadata(s, pb, "cprt",    "copyright", 1);
     mov_write_string_metadata(s, pb, "\251grp", "grouping" , 1);
     mov_write_string_metadata(s, pb, "\251lyr", "lyrics"   , 1);
     mov_write_string_metadata(s, pb, "desc",    "description",1);
@@ -3462,6 +3518,7 @@ static int mov_write_ilst_tag(AVIOContext *pb, MOVMuxContext *mov,
     mov_write_int8_metadata  (s, pb, "hdvd",    "hd_video",  1);
     mov_write_int8_metadata  (s, pb, "pgap",    "gapless_playback",1);
     mov_write_int8_metadata  (s, pb, "cpil",    "compilation", 1);
+    mov_write_covr(pb, s);
     mov_write_trkn_tag(pb, mov, s, 0); // track number
     mov_write_trkn_tag(pb, mov, s, 1); // disc number
     mov_write_tmpo_tag(pb, s);
@@ -3952,7 +4009,7 @@ static int mov_write_isml_manifest(AVIOContext *pb, MOVMuxContext *mov, AVFormat
         AVStream *st = track->st;
         AVDictionaryEntry *lang = av_dict_get(st->metadata, "language", NULL,0);
 
-        if (track->par->codec_type == AVMEDIA_TYPE_VIDEO) {
+        if (track->par->codec_type == AVMEDIA_TYPE_VIDEO && !is_cover_image(st)) {
             type = "video";
         } else if (track->par->codec_type == AVMEDIA_TYPE_AUDIO) {
             type = "audio";
@@ -4572,6 +4629,8 @@ static int mov_write_ftyp_tag(AVIOContext *pb, AVFormatContext *s)
 
     for (i = 0; i < s->nb_streams; i++) {
         AVStream *st = s->streams[i];
+        if (is_cover_image(st))
+            continue;
         if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
             has_video = 1;
         if (st->codecpar->codec_id == AV_CODEC_ID_H264)
@@ -4720,6 +4779,8 @@ static int mov_write_identification(AVIOContext *pb, AVFormatContext *s)
         int video_streams_nb = 0, audio_streams_nb = 0, other_streams_nb = 0;
         for (i = 0; i < s->nb_streams; i++) {
             AVStream *st = s->streams[i];
+            if (is_cover_image(st))
+                continue;
             if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
                 video_streams_nb++;
             else if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
@@ -4909,7 +4970,7 @@ static int mov_flush_fragment(AVFormatContext *s, int force)
         int buf_size, moov_size;
 
         for (i = 0; i < mov->nb_streams; i++)
-            if (!mov->tracks[i].entry)
+            if (!mov->tracks[i].entry && !is_cover_image(mov->tracks[i].st))
                 break;
         /* Don't write the initial moov unless all tracks have data */
         if (i < mov->nb_streams && !force)
@@ -5165,6 +5226,11 @@ int ff_mov_write_packet(AVFormatContext *s, AVPacket *pkt)
         samples_in_chunk = size / trk->sample_size;
     else
         samples_in_chunk = 1;
+
+    if (samples_in_chunk < 1) {
+        av_log(s, AV_LOG_ERROR, "fatal error, input packet contains no samples\n");
+        return AVERROR_PATCHWELCOME;
+    }
 
     /* copy extradata if it exists */
     if (trk->vos_len == 0 && par->extradata_size > 0 &&
@@ -5488,13 +5554,32 @@ static int mov_write_subtitle_end_packet(AVFormatContext *s,
 
 static int mov_write_packet(AVFormatContext *s, AVPacket *pkt)
 {
+    MOVMuxContext *mov = s->priv_data;
+    MOVTrack *trk;
+
     if (!pkt) {
         mov_flush_fragment(s, 1);
         return 1;
+    }
+
+    trk = &mov->tracks[pkt->stream_index];
+
+    if (is_cover_image(trk->st)) {
+        int ret;
+
+        if (trk->st->nb_frames >= 1) {
+            if (trk->st->nb_frames == 1)
+                av_log(s, AV_LOG_WARNING, "Got more than one picture in stream %d,"
+                       " ignoring.\n", pkt->stream_index);
+            return 0;
+        }
+
+        if ((ret = av_packet_ref(&trk->cover_image, pkt)) < 0)
+            return ret;
+
+        return 0;
     } else {
         int i;
-        MOVMuxContext *mov = s->priv_data;
-        MOVTrack *trk = &mov->tracks[pkt->stream_index];
 
         if (!pkt->size)
             return mov_write_single_packet(s, pkt); /* Passthrough. */
@@ -5741,7 +5826,8 @@ static void enable_tracks(AVFormatContext *s)
         AVStream *st = s->streams[i];
 
         if (st->codecpar->codec_type <= AVMEDIA_TYPE_UNKNOWN ||
-            st->codecpar->codec_type >= AVMEDIA_TYPE_NB)
+            st->codecpar->codec_type >= AVMEDIA_TYPE_NB ||
+            is_cover_image(st))
             continue;
 
         if (first[st->codecpar->codec_type] < 0)
@@ -5784,6 +5870,7 @@ static void mov_free(AVFormatContext *s)
             av_freep(&mov->tracks[i].par);
         av_freep(&mov->tracks[i].cluster);
         av_freep(&mov->tracks[i].frag_info);
+        av_packet_unref(&mov->tracks[i].cover_image);
 
         if (mov->tracks[i].eac3_priv) {
             struct eac3_info *info = mov->tracks[i].eac3_priv;
@@ -5962,14 +6049,9 @@ static int mov_init(AVFormatContext *s)
         mov->chapter_track = mov->nb_streams++;
 
     if (mov->flags & FF_MOV_FLAG_RTP_HINT) {
-        /* Add hint tracks for each audio and video stream */
-        for (i = 0; i < s->nb_streams; i++) {
-            AVStream *st = s->streams[i];
-            if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO ||
-                st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+        for (i = 0; i < s->nb_streams; i++)
+            if (rtp_hinting_needed(s->streams[i]))
                 mov->nb_streams++;
-            }
-        }
     }
 
     if (   mov->write_tmcd == -1 && (mov->mode == MODE_MOV || mov->mode == MODE_MP4)
@@ -6112,6 +6194,10 @@ static int mov_init(AVFormatContext *s)
                     av_log(s, AV_LOG_ERROR, "VP9 only supported in MP4.\n");
                     return AVERROR(EINVAL);
                 }
+            } else if (track->par->codec_id == AV_CODEC_ID_AV1) {
+                /* spec is not finished, so forbid for now */
+                av_log(s, AV_LOG_ERROR, "AV1 muxing is currently not supported.\n");
+                return AVERROR_PATCHWELCOME;
             } else if (track->par->codec_id == AV_CODEC_ID_VP8) {
                 /* altref frames handling is not defined in the spec as of version v1.0,
                  * so just forbid muxing VP8 streams altogether until a new version does */
@@ -6204,15 +6290,10 @@ static int mov_write_header(AVFormatContext *s)
         nb_tracks++;
 
     if (mov->flags & FF_MOV_FLAG_RTP_HINT) {
-        /* Add hint tracks for each audio and video stream */
         hint_track = nb_tracks;
-        for (i = 0; i < s->nb_streams; i++) {
-            AVStream *st = s->streams[i];
-            if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO ||
-                st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+        for (i = 0; i < s->nb_streams; i++)
+            if (rtp_hinting_needed(s->streams[i]))
                 nb_tracks++;
-            }
-        }
     }
 
     if (mov->mode == MODE_MOV || mov->mode == MODE_MP4)
@@ -6290,11 +6371,8 @@ static int mov_write_header(AVFormatContext *s)
             return ret;
 
     if (mov->flags & FF_MOV_FLAG_RTP_HINT) {
-        /* Initialize the hint tracks for each audio and video stream */
         for (i = 0; i < s->nb_streams; i++) {
-            AVStream *st = s->streams[i];
-            if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO ||
-                st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            if (rtp_hinting_needed(s->streams[i])) {
                 if ((ret = ff_mov_init_hinting(s, hint_track, i)) < 0)
                     return ret;
                 hint_track++;

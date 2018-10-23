@@ -539,6 +539,10 @@ static av_cold int encode_init(AVCodecContext *avctx)
         s->ec = (s->version >= 3);
     }
 
+    // CRC requires version 3+
+    if (s->ec)
+        s->version = FFMAX(s->version, 3);
+
     if ((s->version == 2 || s->version>3) && avctx->strict_std_compliance > FF_COMPLIANCE_EXPERIMENTAL) {
         av_log(avctx, AV_LOG_ERROR, "Version 2 needed for requested features but version 2 is experimental and not enabled\n");
         return AVERROR_INVALIDDATA;
@@ -558,6 +562,7 @@ FF_ENABLE_DEPRECATION_WARNINGS
 
     s->plane_count = 3;
     switch(avctx->pix_fmt) {
+    case AV_PIX_FMT_GRAY9:
     case AV_PIX_FMT_YUV444P9:
     case AV_PIX_FMT_YUV422P9:
     case AV_PIX_FMT_YUV420P9:
@@ -568,6 +573,7 @@ FF_ENABLE_DEPRECATION_WARNINGS
             s->bits_per_raw_sample = 9;
     case AV_PIX_FMT_GRAY10:
     case AV_PIX_FMT_YUV444P10:
+    case AV_PIX_FMT_YUV440P10:
     case AV_PIX_FMT_YUV420P10:
     case AV_PIX_FMT_YUV422P10:
     case AV_PIX_FMT_YUVA444P10:
@@ -577,11 +583,17 @@ FF_ENABLE_DEPRECATION_WARNINGS
             s->bits_per_raw_sample = 10;
     case AV_PIX_FMT_GRAY12:
     case AV_PIX_FMT_YUV444P12:
+    case AV_PIX_FMT_YUV440P12:
     case AV_PIX_FMT_YUV420P12:
     case AV_PIX_FMT_YUV422P12:
-        s->packed_at_lsb = 1;
         if (!avctx->bits_per_raw_sample && !s->bits_per_raw_sample)
             s->bits_per_raw_sample = 12;
+    case AV_PIX_FMT_YUV444P14:
+    case AV_PIX_FMT_YUV420P14:
+    case AV_PIX_FMT_YUV422P14:
+        if (!avctx->bits_per_raw_sample && !s->bits_per_raw_sample)
+            s->bits_per_raw_sample = 14;
+        s->packed_at_lsb = 1;
     case AV_PIX_FMT_GRAY16:
     case AV_PIX_FMT_YUV444P16:
     case AV_PIX_FMT_YUV422P16:
@@ -684,9 +696,6 @@ FF_ENABLE_DEPRECATION_WARNINGS
                     "bits_per_raw_sample > 8, forcing range coder\n");
             s->ac = AC_RANGE_CUSTOM_TAB;
         }
-    }
-    if (s->transparency) {
-        av_log(avctx, AV_LOG_WARNING, "Storing alpha plane, this will require a recent FFV1 decoder to playback!\n");
     }
 #if FF_API_PRIVATE_OPT
 FF_DISABLE_DEPRECATION_WARNINGS
@@ -1333,6 +1342,9 @@ AVCodec ff_ffv1_encoder = {
         AV_PIX_FMT_GRAY10, AV_PIX_FMT_GRAY12,
         AV_PIX_FMT_GBRP16, AV_PIX_FMT_RGB48,
         AV_PIX_FMT_GBRAP16, AV_PIX_FMT_RGBA64,
+        AV_PIX_FMT_GRAY9,
+        AV_PIX_FMT_YUV420P14, AV_PIX_FMT_YUV422P14, AV_PIX_FMT_YUV444P14,
+        AV_PIX_FMT_YUV440P10, AV_PIX_FMT_YUV440P12,
         AV_PIX_FMT_NONE
 
     },

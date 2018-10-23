@@ -28,6 +28,7 @@
 #include "libavutil/opt.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/pixfmt.h"
+#include "libavutil/internal.h"
 
 #include "avcodec.h"
 #include "decode.h"
@@ -40,9 +41,14 @@
 
 typedef struct MediaCodecH264DecContext {
 
+    AVClass *avclass;
+
     MediaCodecDecContext *ctx;
 
     AVPacket buffered_pkt;
+
+    int delay_flush;
+    int amlogic_mpeg2_api23_workaround;
 
 } MediaCodecH264DecContext;
 
@@ -263,34 +269,11 @@ done:
 }
 #endif
 
-#if CONFIG_MPEG2_MEDIACODEC_DECODER
-static int mpeg2_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
-{
-    int ret = 0;
-
-    if (avctx->extradata) {
-        ff_AMediaFormat_setBuffer(format, "csd-0", avctx->extradata, avctx->extradata_size);
-    }
-
-    return ret;
-}
-#endif
-
-#if CONFIG_MPEG4_MEDIACODEC_DECODER
-static int mpeg4_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
-{
-    int ret = 0;
-
-    if (avctx->extradata) {
-        ff_AMediaFormat_setBuffer(format, "csd-0", avctx->extradata, avctx->extradata_size);
-    }
-
-    return ret;
-}
-#endif
-
-#if CONFIG_VP8_MEDIACODEC_DECODER || CONFIG_VP9_MEDIACODEC_DECODER
-static int vpx_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+#if CONFIG_MPEG2_MEDIACODEC_DECODER || \
+    CONFIG_MPEG4_MEDIACODEC_DECODER || \
+    CONFIG_VP8_MEDIACODEC_DECODER   || \
+    CONFIG_VP9_MEDIACODEC_DECODER
+static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
 {
     int ret = 0;
 
@@ -305,6 +288,7 @@ static int vpx_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
 static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
 {
     int ret;
+    int sdk_int;
 
     const char *codec_mime = NULL;
 
@@ -341,7 +325,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
     case AV_CODEC_ID_MPEG2VIDEO:
         codec_mime = "video/mpeg2";
 
-        ret = mpeg2_set_extradata(avctx, format);
+        ret = common_set_extradata(avctx, format);
         if (ret < 0)
             goto done;
         break;
@@ -350,7 +334,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
     case AV_CODEC_ID_MPEG4:
         codec_mime = "video/mp4v-es",
 
-        ret = mpeg4_set_extradata(avctx, format);
+        ret = common_set_extradata(avctx, format);
         if (ret < 0)
             goto done;
         break;
@@ -359,7 +343,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
     case AV_CODEC_ID_VP8:
         codec_mime = "video/x-vnd.on2.vp8";
 
-        ret = vpx_set_extradata(avctx, format);
+        ret = common_set_extradata(avctx, format);
         if (ret < 0)
             goto done;
         break;
@@ -368,7 +352,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
     case AV_CODEC_ID_VP9:
         codec_mime = "video/x-vnd.on2.vp9";
 
-        ret = vpx_set_extradata(avctx, format);
+        ret = common_set_extradata(avctx, format);
         if (ret < 0)
             goto done;
         break;
@@ -388,12 +372,24 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
         goto done;
     }
 
+    s->ctx->delay_flush = s->delay_flush;
+
     if ((ret = ff_mediacodec_dec_init(avctx, s->ctx, codec_mime, format)) < 0) {
         s->ctx = NULL;
         goto done;
     }
 
-    av_log(avctx, AV_LOG_INFO, "MediaCodec started successfully, ret = %d\n", ret);
+    av_log(avctx, AV_LOG_INFO,
+           "MediaCodec started successfully: codec = %s, ret = %d\n",
+           s->ctx->codec_name, ret);
+
+    sdk_int = ff_Build_SDK_INT(avctx);
+    if (sdk_int <= 23 &&
+        strcmp(s->ctx->codec_name, "OMX.amlogic.mpeg2.decoder.awesome") == 0) {
+        av_log(avctx, AV_LOG_INFO, "Enabling workaround for %s on API=%d\n",
+               s->ctx->codec_name, sdk_int);
+        s->amlogic_mpeg2_api23_workaround = 1;
+    }
 
 done:
     if (format) {
@@ -407,82 +403,72 @@ done:
     return ret;
 }
 
-static int mediacodec_send_receive(AVCodecContext *avctx,
-                                   MediaCodecH264DecContext *s,
-                                   AVFrame *frame, bool wait)
-{
-    int ret;
-
-    /* send any pending data from buffered packet */
-    while (s->buffered_pkt.size) {
-        ret = ff_mediacodec_dec_send(avctx, s->ctx, &s->buffered_pkt);
-        if (ret == AVERROR(EAGAIN))
-            break;
-        else if (ret < 0)
-            return ret;
-        s->buffered_pkt.size -= ret;
-        s->buffered_pkt.data += ret;
-        if (s->buffered_pkt.size <= 0)
-            av_packet_unref(&s->buffered_pkt);
-    }
-
-    /* check for new frame */
-    return ff_mediacodec_dec_receive(avctx, s->ctx, frame, wait);
-}
-
 static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
 {
     MediaCodecH264DecContext *s = avctx->priv_data;
     int ret;
+    ssize_t index;
 
-    /*
-     * MediaCodec.flush() discards both input and output buffers, thus we
-     * need to delay the call to this function until the user has released or
-     * renderered the frames he retains.
-     *
-     * After we have buffered an input packet, check if the codec is in the
-     * flushing state. If it is, we need to call ff_mediacodec_dec_flush.
-     *
-     * ff_mediacodec_dec_flush returns 0 if the flush cannot be performed on
-     * the codec (because the user retains frames). The codec stays in the
-     * flushing state.
-     *
-     * ff_mediacodec_dec_flush returns 1 if the flush can actually be
-     * performed on the codec. The codec leaves the flushing state and can
-     * process again packets.
-     *
-     * ff_mediacodec_dec_flush returns a negative value if an error has
-     * occurred.
-     *
-     */
-    if (ff_mediacodec_dec_is_flushing(avctx, s->ctx)) {
+    /* In delay_flush mode, wait until the user has released or rendered
+       all retained frames. */
+    if (s->delay_flush && ff_mediacodec_dec_is_flushing(avctx, s->ctx)) {
         if (!ff_mediacodec_dec_flush(avctx, s->ctx)) {
             return AVERROR(EAGAIN);
         }
     }
 
-    /* flush buffered packet and check for new frame */
-    ret = mediacodec_send_receive(avctx, s, frame, false);
+    /* poll for new frame */
+    ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, false);
     if (ret != AVERROR(EAGAIN))
         return ret;
 
-    /* skip fetching new packet if we still have one buffered */
-    if (s->buffered_pkt.size > 0)
-        return AVERROR(EAGAIN);
+    /* feed decoder */
+    while (1) {
+        if (s->ctx->current_input_buffer < 0) {
+            /* poll for input space */
+            index = ff_AMediaCodec_dequeueInputBuffer(s->ctx->codec, 0);
+            if (index < 0) {
+                /* no space, block for an output frame to appear */
+                return ff_mediacodec_dec_receive(avctx, s->ctx, frame, true);
+            }
+            s->ctx->current_input_buffer = index;
+        }
 
-    /* fetch new packet or eof */
-    ret = ff_decode_get_packet(avctx, &s->buffered_pkt);
-    if (ret == AVERROR_EOF) {
-        AVPacket null_pkt = { 0 };
-        ret = ff_mediacodec_dec_send(avctx, s->ctx, &null_pkt);
-        if (ret < 0)
+        /* try to flush any buffered packet data */
+        if (s->buffered_pkt.size > 0) {
+            ret = ff_mediacodec_dec_send(avctx, s->ctx, &s->buffered_pkt, false);
+            if (ret >= 0) {
+                s->buffered_pkt.size -= ret;
+                s->buffered_pkt.data += ret;
+                if (s->buffered_pkt.size <= 0)
+                    av_packet_unref(&s->buffered_pkt);
+            } else if (ret < 0 && ret != AVERROR(EAGAIN)) {
+                return ret;
+            }
+
+            if (s->amlogic_mpeg2_api23_workaround && s->buffered_pkt.size <= 0) {
+                /* fallthrough to fetch next packet regardless of input buffer space */
+            } else {
+                /* poll for space again */
+                continue;
+            }
+        }
+
+        /* fetch new packet or eof */
+        ret = ff_decode_get_packet(avctx, &s->buffered_pkt);
+        if (ret == AVERROR_EOF) {
+            AVPacket null_pkt = { 0 };
+            ret = ff_mediacodec_dec_send(avctx, s->ctx, &null_pkt, true);
+            if (ret < 0)
+                return ret;
+        } else if (ret == AVERROR(EAGAIN) && s->ctx->current_input_buffer < 0) {
+            return ff_mediacodec_dec_receive(avctx, s->ctx, frame, true);
+        } else if (ret < 0) {
             return ret;
+        }
     }
-    else if (ret < 0)
-        return ret;
 
-    /* crank decoder with new packet */
-    return mediacodec_send_receive(avctx, s, frame, true);
+    return AVERROR(EAGAIN);
 }
 
 static void mediacodec_decode_flush(AVCodecContext *avctx)
@@ -507,112 +493,62 @@ static const AVCodecHWConfigInternal *mediacodec_hw_configs[] = {
     NULL
 };
 
-#if CONFIG_H264_MEDIACODEC_DECODER
-AVCodec ff_h264_mediacodec_decoder = {
-    .name           = "h264_mediacodec",
-    .long_name      = NULL_IF_CONFIG_SMALL("H.264 Android MediaCodec decoder"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_H264,
-    .priv_data_size = sizeof(MediaCodecH264DecContext),
-    .init           = mediacodec_decode_init,
-    .receive_frame  = mediacodec_receive_frame,
-    .flush          = mediacodec_decode_flush,
-    .close          = mediacodec_decode_close,
-    .capabilities   = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_AVOID_PROBING | AV_CODEC_CAP_HARDWARE,
-    .caps_internal  = FF_CODEC_CAP_SETS_PKT_DTS,
-    .bsfs           = "h264_mp4toannexb",
-    .hw_configs     = mediacodec_hw_configs,
-    .wrapper_name   = "mediacodec",
+#define OFFSET(x) offsetof(MediaCodecH264DecContext, x)
+#define VD AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_DECODING_PARAM
+static const AVOption ff_mediacodec_vdec_options[] = {
+    { "delay_flush", "Delay flush until hw output buffers are returned to the decoder",
+                     OFFSET(delay_flush), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
+    { NULL }
 };
+
+#define DECLARE_MEDIACODEC_VCLASS(short_name)                   \
+static const AVClass ff_##short_name##_mediacodec_dec_class = { \
+    .class_name = #short_name "_mediacodec",                    \
+    .item_name  = av_default_item_name,                         \
+    .option     = ff_mediacodec_vdec_options,                   \
+    .version    = LIBAVUTIL_VERSION_INT,                        \
+};
+
+#define DECLARE_MEDIACODEC_VDEC(short_name, full_name, codec_id, bsf)                          \
+DECLARE_MEDIACODEC_VCLASS(short_name)                                                          \
+AVCodec ff_##short_name##_mediacodec_decoder = {                                               \
+    .name           = #short_name "_mediacodec",                                               \
+    .long_name      = NULL_IF_CONFIG_SMALL(full_name " Android MediaCodec decoder"),           \
+    .type           = AVMEDIA_TYPE_VIDEO,                                                      \
+    .id             = codec_id,                                                                \
+    .priv_class     = &ff_##short_name##_mediacodec_dec_class,                                 \
+    .priv_data_size = sizeof(MediaCodecH264DecContext),                                        \
+    .init           = mediacodec_decode_init,                                                  \
+    .receive_frame  = mediacodec_receive_frame,                                                \
+    .flush          = mediacodec_decode_flush,                                                 \
+    .close          = mediacodec_decode_close,                                                 \
+    .capabilities   = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_AVOID_PROBING | AV_CODEC_CAP_HARDWARE, \
+    .caps_internal  = FF_CODEC_CAP_SETS_PKT_DTS,                                               \
+    .bsfs           = bsf,                                                                     \
+    .hw_configs     = mediacodec_hw_configs,                                                   \
+    .wrapper_name   = "mediacodec",                                                            \
+};                                                                                             \
+
+#if CONFIG_H264_MEDIACODEC_DECODER
+DECLARE_MEDIACODEC_VDEC(h264, "H.264", AV_CODEC_ID_H264, "h264_mp4toannexb")
 #endif
 
 #if CONFIG_HEVC_MEDIACODEC_DECODER
-AVCodec ff_hevc_mediacodec_decoder = {
-    .name           = "hevc_mediacodec",
-    .long_name      = NULL_IF_CONFIG_SMALL("H.265 Android MediaCodec decoder"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_HEVC,
-    .priv_data_size = sizeof(MediaCodecH264DecContext),
-    .init           = mediacodec_decode_init,
-    .receive_frame  = mediacodec_receive_frame,
-    .flush          = mediacodec_decode_flush,
-    .close          = mediacodec_decode_close,
-    .capabilities   = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_AVOID_PROBING | AV_CODEC_CAP_HARDWARE,
-    .caps_internal  = FF_CODEC_CAP_SETS_PKT_DTS,
-    .bsfs           = "hevc_mp4toannexb",
-    .hw_configs     = mediacodec_hw_configs,
-    .wrapper_name   = "mediacodec",
-};
+DECLARE_MEDIACODEC_VDEC(hevc, "H.265", AV_CODEC_ID_HEVC, "hevc_mp4toannexb")
 #endif
 
 #if CONFIG_MPEG2_MEDIACODEC_DECODER
-AVCodec ff_mpeg2_mediacodec_decoder = {
-    .name           = "mpeg2_mediacodec",
-    .long_name      = NULL_IF_CONFIG_SMALL("MPEG-2 Android MediaCodec decoder"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_MPEG2VIDEO,
-    .priv_data_size = sizeof(MediaCodecH264DecContext),
-    .init           = mediacodec_decode_init,
-    .receive_frame  = mediacodec_receive_frame,
-    .flush          = mediacodec_decode_flush,
-    .close          = mediacodec_decode_close,
-    .capabilities   = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_AVOID_PROBING | AV_CODEC_CAP_HARDWARE,
-    .caps_internal  = FF_CODEC_CAP_SETS_PKT_DTS,
-    .hw_configs     = mediacodec_hw_configs,
-    .wrapper_name   = "mediacodec",
-};
+DECLARE_MEDIACODEC_VDEC(mpeg2, "MPEG-2", AV_CODEC_ID_MPEG2VIDEO, NULL)
 #endif
 
 #if CONFIG_MPEG4_MEDIACODEC_DECODER
-AVCodec ff_mpeg4_mediacodec_decoder = {
-    .name           = "mpeg4_mediacodec",
-    .long_name      = NULL_IF_CONFIG_SMALL("MPEG-4 Android MediaCodec decoder"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_MPEG4,
-    .priv_data_size = sizeof(MediaCodecH264DecContext),
-    .init           = mediacodec_decode_init,
-    .receive_frame  = mediacodec_receive_frame,
-    .flush          = mediacodec_decode_flush,
-    .close          = mediacodec_decode_close,
-    .capabilities   = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_AVOID_PROBING | AV_CODEC_CAP_HARDWARE,
-    .caps_internal  = FF_CODEC_CAP_SETS_PKT_DTS,
-    .hw_configs     = mediacodec_hw_configs,
-    .wrapper_name   = "mediacodec",
-};
+DECLARE_MEDIACODEC_VDEC(mpeg4, "MPEG-4", AV_CODEC_ID_MPEG4, NULL)
 #endif
 
 #if CONFIG_VP8_MEDIACODEC_DECODER
-AVCodec ff_vp8_mediacodec_decoder = {
-    .name           = "vp8_mediacodec",
-    .long_name      = NULL_IF_CONFIG_SMALL("VP8 Android MediaCodec decoder"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_VP8,
-    .priv_data_size = sizeof(MediaCodecH264DecContext),
-    .init           = mediacodec_decode_init,
-    .receive_frame  = mediacodec_receive_frame,
-    .flush          = mediacodec_decode_flush,
-    .close          = mediacodec_decode_close,
-    .capabilities   = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_AVOID_PROBING | AV_CODEC_CAP_HARDWARE,
-    .caps_internal  = FF_CODEC_CAP_SETS_PKT_DTS,
-    .hw_configs     = mediacodec_hw_configs,
-    .wrapper_name   = "mediacodec",
-};
+DECLARE_MEDIACODEC_VDEC(vp8, "VP8", AV_CODEC_ID_VP8, NULL)
 #endif
 
 #if CONFIG_VP9_MEDIACODEC_DECODER
-AVCodec ff_vp9_mediacodec_decoder = {
-    .name           = "vp9_mediacodec",
-    .long_name      = NULL_IF_CONFIG_SMALL("VP9 Android MediaCodec decoder"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_VP9,
-    .priv_data_size = sizeof(MediaCodecH264DecContext),
-    .init           = mediacodec_decode_init,
-    .receive_frame  = mediacodec_receive_frame,
-    .flush          = mediacodec_decode_flush,
-    .close          = mediacodec_decode_close,
-    .capabilities   = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_AVOID_PROBING | AV_CODEC_CAP_HARDWARE,
-    .caps_internal  = FF_CODEC_CAP_SETS_PKT_DTS,
-    .hw_configs     = mediacodec_hw_configs,
-    .wrapper_name   = "mediacodec",
-};
+DECLARE_MEDIACODEC_VDEC(vp9, "VP9", AV_CODEC_ID_VP9, NULL)
 #endif

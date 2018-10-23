@@ -217,14 +217,6 @@ typedef struct HLSContext {
     AVIOContext *playlist_pb;
 } HLSContext;
 
-static int read_chomp_line(AVIOContext *s, char *buf, int maxlen)
-{
-    int len = ff_get_line(s, buf, maxlen);
-    while (len > 0 && av_isspace(buf[len - 1]))
-        buf[--len] = '\0';
-    return len;
-}
-
 static void free_segment_list(struct playlist *pls)
 {
     int i;
@@ -744,7 +736,6 @@ static int parse_playlist(HLSContext *c, const char *url,
     }
 
     if (!in) {
-#if 1
         AVDictionary *opts = NULL;
         /* Some HLS servers don't like being sent the range header */
         av_dict_set(&opts, "seekable", "0", 0);
@@ -767,18 +758,12 @@ static int parse_playlist(HLSContext *c, const char *url,
             c->playlist_pb = in;
         else
             close_in = 1;
-#else
-        ret = open_in(c, &in, url);
-        if (ret < 0)
-            return ret;
-        close_in = 1;
-#endif
     }
 
     if (av_opt_get(in, "location", AV_OPT_SEARCH_CHILDREN, &new_url) >= 0)
         url = new_url;
 
-    read_chomp_line(in, line, sizeof(line));
+    ff_get_chomp_line(in, line, sizeof(line));
     if (strcmp(line, "#EXTM3U")) {
         ret = AVERROR_INVALIDDATA;
         goto fail;
@@ -790,7 +775,7 @@ static int parse_playlist(HLSContext *c, const char *url,
         pls->type = PLS_TYPE_UNSPECIFIED;
     }
     while (!avio_feof(in)) {
-        read_chomp_line(in, line, sizeof(line));
+        ff_get_chomp_line(in, line, sizeof(line));
         if (av_strstart(line, "#EXT-X-STREAM-INF:", &ptr)) {
             is_variant = 1;
             memset(&variant_info, 0, sizeof(variant_info));

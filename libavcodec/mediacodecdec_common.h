@@ -36,7 +36,9 @@
 
 typedef struct MediaCodecDecContext {
 
+    AVCodecContext *avctx;
     atomic_int refcount;
+    atomic_int hw_buffer_count;
 
     char *codec_name;
 
@@ -55,13 +57,18 @@ typedef struct MediaCodecDecContext {
     int stride;
     int slice_height;
     int color_format;
-    enum AVPixelFormat pix_fmt;
     int crop_top;
     int crop_bottom;
     int crop_left;
     int crop_right;
+    int display_width;
+    int display_height;
 
     uint64_t output_buffer_count;
+    ssize_t current_input_buffer;
+
+    bool delay_flush;
+    atomic_int serial;
 
 } MediaCodecDecContext;
 
@@ -72,7 +79,8 @@ int ff_mediacodec_dec_init(AVCodecContext *avctx,
 
 int ff_mediacodec_dec_send(AVCodecContext *avctx,
                            MediaCodecDecContext *s,
-                           AVPacket *pkt);
+                           AVPacket *pkt,
+                           bool wait);
 
 int ff_mediacodec_dec_receive(AVCodecContext *avctx,
                               MediaCodecDecContext *s,
@@ -94,6 +102,7 @@ typedef struct MediaCodecBuffer {
     ssize_t index;
     int64_t pts;
     atomic_int released;
+    int serial;
 
 } MediaCodecBuffer;
 

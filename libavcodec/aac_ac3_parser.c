@@ -75,6 +75,9 @@ get_next:
                     s->remaining_size += i;
                     goto get_next;
                 }
+                else if (i < 0) {
+                    s->remaining_size += i;
+                }
             }
         }
     }
@@ -102,15 +105,18 @@ skip_sync:
     if (got_frame) {
         if (avctx->codec_id != AV_CODEC_ID_AAC) {
             avctx->sample_rate = s->sample_rate;
-            avctx->channels = s->channels;
-            avctx->channel_layout = s->channel_layout;
+            if (avctx->codec_id != AV_CODEC_ID_EAC3) {
+                avctx->channels = s->channels;
+                avctx->channel_layout = s->channel_layout;
+            }
             s1->duration = s->samples;
             avctx->audio_service_type = s->service_type;
 
             avctx->sample_fmt = AV_SAMPLE_FMT_S16P;
         }
 
-        avctx->bit_rate = s->bit_rate;
+        if (avctx->codec_id != AV_CODEC_ID_EAC3)
+            avctx->bit_rate = s->bit_rate;
     }
 
     return i;
