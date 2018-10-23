@@ -27,7 +27,11 @@
 #include "config.h"
 #include "libavutil/thread.h"
 #include "avcodec.h"
+#include "internal.h"
 #include "version.h"
+#include "libavutil/extlib.h"
+
+#include "libavutil/avassert.h" //PLEX
 
 extern AVCodec ff_a64multi_encoder;
 extern AVCodec ff_a64multi5_encoder;
@@ -137,6 +141,8 @@ extern AVCodec ff_h264_decoder;
 extern AVCodec ff_h264_crystalhd_decoder;
 extern AVCodec ff_h264_v4l2m2m_decoder;
 extern AVCodec ff_h264_mediacodec_decoder;
+extern AVCodec ff_h264_mediacodecndk_decoder;
+//PLEX^
 extern AVCodec ff_h264_mmal_decoder;
 extern AVCodec ff_h264_qsv_decoder;
 extern AVCodec ff_h264_rkmpp_decoder;
@@ -659,6 +665,43 @@ extern AVCodec ff_pcm_alaw_at_encoder;
 extern AVCodec ff_pcm_alaw_at_decoder;
 extern AVCodec ff_pcm_mulaw_at_encoder;
 extern AVCodec ff_pcm_mulaw_at_decoder;
+//PLEX
+extern AVCodec ff_mp1_mediacodecndk_decoder;
+extern AVCodec ff_mp2_mediacodecndk_decoder;
+extern AVCodec ff_mp3_mediacodecndk_decoder;
+extern AVCodec ff_aac_mf_encoder;
+extern AVCodec ff_aac_mf_decoder;
+extern AVCodec ff_ac3_mf_encoder;
+extern AVCodec ff_ac3_mf_decoder;
+extern AVCodec ff_eac3_mf_decoder;
+extern AVCodec ff_h264_mf_encoder;
+extern AVCodec ff_h264_mf_decoder;
+extern AVCodec ff_hevc_mf_encoder;
+extern AVCodec ff_hevc_mf_decoder;
+extern AVCodec ff_mjpeg_mf_decoder;
+extern AVCodec ff_mp1_mf_decoder;
+extern AVCodec ff_mp2_mf_decoder;
+extern AVCodec ff_mp3_mf_encoder;
+extern AVCodec ff_mp3_mf_decoder;
+extern AVCodec ff_mpeg2_mf_decoder;
+extern AVCodec ff_mpeg4_mf_decoder;
+extern AVCodec ff_msmpeg4v1_mf_decoder;
+extern AVCodec ff_msmpeg4v2_mf_decoder;
+extern AVCodec ff_msmpeg4v3_mf_decoder;
+extern AVCodec ff_vc1_mf_decoder;
+extern AVCodec ff_wmalossless_mf_decoder;
+extern AVCodec ff_wmapro_mf_decoder;
+extern AVCodec ff_wmav1_mf_decoder;
+extern AVCodec ff_wmav2_mf_decoder;
+extern AVCodec ff_wmavoice_mf_decoder;
+extern AVCodec ff_wmv1_mf_decoder;
+extern AVCodec ff_wmv2_mf_decoder;
+extern AVCodec ff_wmv3_mf_decoder;
+extern AVCodec ff_eac3_eae_encoder;
+extern AVCodec ff_eac3_eae_decoder;
+extern AVCodec ff_truehd_eae_decoder;
+extern AVCodec ff_mlp_eae_decoder;
+//PLEX
 extern AVCodec ff_qdmc_at_decoder;
 extern AVCodec ff_qdm2_at_decoder;
 extern AVCodec ff_libcelt_decoder;
@@ -715,6 +758,8 @@ extern AVCodec ff_libopenh264_encoder;
 extern AVCodec ff_libopenh264_decoder;
 extern AVCodec ff_h264_amf_encoder;
 extern AVCodec ff_h264_cuvid_decoder;
+extern AVCodec ff_h264_mediacodecndk_encoder;
+//PLEX^
 extern AVCodec ff_h264_nvenc_encoder;
 extern AVCodec ff_h264_omx_encoder;
 extern AVCodec ff_h264_qsv_encoder;
@@ -740,22 +785,43 @@ extern AVCodec ff_mjpeg_qsv_encoder;
 extern AVCodec ff_mjpeg_vaapi_encoder;
 extern AVCodec ff_mpeg1_cuvid_decoder;
 extern AVCodec ff_mpeg2_cuvid_decoder;
+extern AVCodec ff_mpeg2_mediacodecndk_decoder;
+//PLEX^
 extern AVCodec ff_mpeg2_qsv_encoder;
 extern AVCodec ff_mpeg2_vaapi_encoder;
 extern AVCodec ff_mpeg4_cuvid_decoder;
 extern AVCodec ff_mpeg4_mediacodec_decoder;
+extern AVCodec ff_mpeg4_mediacodecndk_decoder;
+//PLEX^
 extern AVCodec ff_mpeg4_v4l2m2m_encoder;
 extern AVCodec ff_vc1_cuvid_decoder;
+extern AVCodec ff_vc1_mediacodecndk_decoder;
+//PLEX^
 extern AVCodec ff_vp8_cuvid_decoder;
 extern AVCodec ff_vp8_mediacodec_decoder;
+extern AVCodec ff_vp8_mediacodecndk_decoder;
+//PLEX^
 extern AVCodec ff_vp8_qsv_decoder;
 extern AVCodec ff_vp8_v4l2m2m_encoder;
 extern AVCodec ff_vp8_vaapi_encoder;
 extern AVCodec ff_vp9_cuvid_decoder;
 extern AVCodec ff_vp9_mediacodec_decoder;
+extern AVCodec ff_vp9_mediacodecndk_decoder;
+//PLEX^
 extern AVCodec ff_vp9_vaapi_encoder;
 
+extern AVCodec ff_fake_avi_decoder;
+//PLEX^
+
 #include "libavcodec/codec_list.c"
+
+//PLEX
+#define NB_BUILTIN_CODECS ((sizeof(codec_list) / sizeof(codec_list[0])) - 1)
+static AVMutex register_mutex = AV_MUTEX_INITIALIZER;
+static AVCodec **dynloaded_codecs = NULL;
+static int       nb_dynloaded_codecs = 0;
+static AVCodec **dynloaded_codecs_tail = NULL;
+//PLEX
 
 static AVOnce av_codec_static_init = AV_ONCE_INIT;
 static void av_codec_init_static(void)
@@ -764,11 +830,34 @@ static void av_codec_init_static(void)
         if (codec_list[i]->init_static_data)
             codec_list[i]->init_static_data((AVCodec*)codec_list[i]);
     }
+
+    ff_avcodec_scan_new_things();
 }
 
 const AVCodec *av_codec_iterate(void **opaque)
 {
     uintptr_t i = (uintptr_t)*opaque;
+
+//PLEX
+    if (i == 0)
+        ff_avcodec_scan_new_things();
+
+    if (i >= NB_BUILTIN_CODECS) {
+        AVCodec *ret = NULL;
+        i -= NB_BUILTIN_CODECS;
+        ff_mutex_lock(&register_mutex);
+        if (i < nb_dynloaded_codecs)
+            ret = dynloaded_codecs[i];
+        ff_mutex_unlock(&register_mutex);
+        if (ret) {
+            *opaque = (void*)(NB_BUILTIN_CODECS + i + 1);
+            return ret;
+        } else {
+            i = NB_BUILTIN_CODECS;
+        }
+    }
+//PLEX
+
     const AVCodec *c = codec_list[i];
 
     ff_thread_once(&av_codec_static_init, av_codec_init_static);
@@ -795,7 +884,6 @@ static void av_codec_init_next(void)
 }
 
 
-
 av_cold void avcodec_register(AVCodec *codec)
 {
     ff_thread_once(&av_codec_next_init, av_codec_init_next);
@@ -804,6 +892,11 @@ av_cold void avcodec_register(AVCodec *codec)
 AVCodec *av_codec_next(const AVCodec *c)
 {
     ff_thread_once(&av_codec_next_init, av_codec_init_next);
+
+    //PLEX
+    if (!c)
+        ff_avcodec_scan_new_things();
+    //PLEX
 
     if (c)
         return c->next;
@@ -818,6 +911,36 @@ void avcodec_register_all(void)
 FF_ENABLE_DEPRECATION_WARNINGS
 #endif
 
+//PLEX
+static void dynload_register_codec(AVCodec *codec)
+{
+  if (codec->init_static_data)
+    codec->init_static_data(codec);
+  if (codec->probe && codec->probe(codec) < 0)
+      return;
+  ff_mutex_lock(&register_mutex);
+  if (!dynloaded_codecs_tail)
+      dynloaded_codecs_tail = (AVCodec**)&codec_list[NB_BUILTIN_CODECS - 1]->next;
+  *dynloaded_codecs_tail = codec;
+  dynloaded_codecs_tail = &codec->next;
+  if (!av_dynarray2_add((void**)&dynloaded_codecs, &nb_dynloaded_codecs, sizeof(codec), (void*)&codec))
+      av_assert0(!"Failed to reallocate dynamic codec array");
+  ff_mutex_unlock(&register_mutex);
+}
+
+static FFLibrary ff_library = {
+    .av_vlog = av_vlog,
+    .av_version_info = av_version_info,
+    .avcodec_version = avcodec_version,
+    .avcodec_register = dynload_register_codec,
+};
+
+void ff_avcodec_scan_new_things(void)
+{
+    avpriv_load_new_libs(&ff_library);
+}
+//PLEX
+
 static enum AVCodecID remap_deprecated_codec_id(enum AVCodecID id)
 {
     switch(id){
@@ -829,6 +952,8 @@ static enum AVCodecID remap_deprecated_codec_id(enum AVCodecID id)
 
 static AVCodec *find_codec(enum AVCodecID id, int (*x)(const AVCodec *))
 {
+    const AVCodec *fallback = NULL; //PLEX
+    const AVCodecDescriptor *codec_desc = avcodec_descriptor_get(id); //PLEX
     const AVCodec *p, *experimental = NULL;
     void *i = 0;
 
@@ -840,10 +965,17 @@ static AVCodec *find_codec(enum AVCodecID id, int (*x)(const AVCodec *))
         if (p->id == id) {
             if (p->capabilities & AV_CODEC_CAP_EXPERIMENTAL && !experimental) {
                 experimental = p;
-            } else
+            } else if (codec_desc && strcmp(codec_desc->name, p->name) == 0) {
                 return (AVCodec*)p;
+            } else if (!fallback)
+                fallback = p;
         }
     }
+
+    //PLEX
+    if (fallback)
+        return (AVCodec*)fallback;
+    //PLEX
 
     return (AVCodec*)experimental;
 }

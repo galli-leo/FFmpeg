@@ -39,6 +39,10 @@
 #include "libavutil/imgutils.h"
 #include "libavutil/samplefmt.h"
 
+//PLEX
+#include "plex.h"
+//PLEX
+
 static const enum AVPixelFormat *get_compliance_unofficial_pix_fmts(enum AVCodecID codec_id, const enum AVPixelFormat default_formats[])
 {
     static const enum AVPixelFormat mjpeg_formats[] =
@@ -775,6 +779,13 @@ static int configure_input_video_filter(FilterGraph *fg, InputFilter *ifilter,
     if(!sar.den)
         sar = (AVRational){0,1};
     av_bprint_init(&args, 0, 1);
+    // PLEX
+    // If we run out of time in the analysis probe, the pixel format might
+    // not be detected correctly. This sets a sane default if that happens,
+    // which is probably good >75% of the time, which is better than 0%.
+    if (ifilter->format == AV_PIX_FMT_NONE)
+        ifilter->format = AV_PIX_FMT_YUV420P;
+    // PLEX
     av_bprintf(&args,
              "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:"
              "pixel_aspect=%d/%d:sws_param=flags=%d",
@@ -868,6 +879,11 @@ static int configure_input_audio_filter(FilterGraph *fg, InputFilter *ifilter,
     char name[255];
     int ret, pad_idx = 0;
     int64_t tsoffset = 0;
+//PLEX
+    // remove once we strictly use a format from decoded frames
+    if (ifilter->format == AV_SAMPLE_FMT_NONE)
+        ifilter->format = AV_SAMPLE_FMT_S16P;
+//PLEX
 
     if (ist->dec_ctx->codec_type != AVMEDIA_TYPE_AUDIO) {
         av_log(NULL, AV_LOG_ERROR, "Cannot connect audio filter to non audio input\n");
@@ -1114,6 +1130,11 @@ int configure_filtergraph(FilterGraph *fg)
         ofilter->sample_rate    = av_buffersink_get_sample_rate(sink);
         ofilter->channel_layout = av_buffersink_get_channel_layout(sink);
     }
+
+//PLEX
+    //make sure the inlineasscontext is set up properly for each stream
+    plex_link_subtitles_to_graph(fg->graph);
+//PLEX
 
     fg->reconfiguration = 1;
 

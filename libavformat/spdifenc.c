@@ -118,7 +118,7 @@ static int spdif_header_eac3(AVFormatContext *s, AVPacket *pkt)
     static const uint8_t eac3_repeat[4] = {6, 3, 2, 1};
     int repeat = 1;
 
-    if ((pkt->data[4] & 0xc0) != 0xc0) /* fscod */
+    if ((pkt->data[5] >> 3 >= 16) && (pkt->data[4] & 0xc0) != 0xc0) /* bsid, fscod */
         repeat = eac3_repeat[(pkt->data[4] & 0x30) >> 4]; /* numblkscod */
 
     ctx->hd_buf = av_fast_realloc(ctx->hd_buf, &ctx->hd_buf_size, ctx->hd_buf_filled + pkt->size);

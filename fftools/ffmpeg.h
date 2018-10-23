@@ -230,6 +230,10 @@ typedef struct OptionsContext {
     int        nb_time_bases;
     SpecifierOpt *enc_time_bases;
     int        nb_enc_time_bases;
+
+    // PLEX
+    SpecifierOpt *hwaccel_fallback_thresholds;
+    int        nb_hwaccel_fallback_thresholds;
 } OptionsContext;
 
 typedef struct InputFilter {
@@ -388,6 +392,12 @@ typedef struct InputStream {
     int nb_dts_buffer;
 
     int got_output;
+
+    // PLEX
+    int hwaccel_active;             // whether hwdec was initialized
+    int hwaccel_blocked;            // if set, don't try to use hwaccel
+    int hwaccel_error_counter;      // current error counter for fallback
+    int hwaccel_fallback_threshold; // after how many errors to start fallback
 } InputStream;
 
 typedef struct InputFile {
@@ -455,6 +465,7 @@ typedef struct OutputStream {
     int64_t first_pts;
     /* dts of the last packet sent to the muxer */
     int64_t last_mux_dts;
+    int64_t last_mux_pts;  // <PLEX
     // the timebase of the packets sent to the muxer
     AVRational mux_timebase;
     AVRational enc_timebase;
@@ -657,6 +668,7 @@ int ffmpeg_parse_options(int argc, char **argv);
 int videotoolbox_init(AVCodecContext *s);
 int qsv_init(AVCodecContext *s);
 int cuvid_init(AVCodecContext *s);
+int mf_init(AVCodecContext *s);
 
 HWDevice *hw_device_get_by_name(const char *name);
 int hw_device_init_from_string(const char *arg, HWDevice **dev);

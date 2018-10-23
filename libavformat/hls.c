@@ -32,6 +32,7 @@
 #include "libavutil/intreadwrite.h"
 #include "libavutil/mathematics.h"
 #include "libavutil/opt.h"
+#include "libavutil/parseutils.h"
 #include "libavutil/dict.h"
 #include "libavutil/time.h"
 #include "avformat.h"
@@ -852,6 +853,10 @@ static int parse_playlist(HLSContext *c, const char *url,
             ptr = strchr(ptr, '@');
             if (ptr)
                 seg_offset = strtoll(ptr+1, NULL, 10);
+        } else if (av_strstart(line, "#EXT-X-PROGRAM-DATE-TIME:", &ptr)) {
+            int64_t timestamp;
+            if (av_parse_time(&timestamp, ptr, 0) >= 0)
+                avpriv_dict_set_timestamp(&c->ctx->metadata, "creation_time", timestamp);
         } else if (av_strstart(line, "#", NULL)) {
             continue;
         } else if (line[0]) {
@@ -1719,6 +1724,16 @@ static int set_stream_info_from_input_stream(AVStream *st, struct playlist *pls,
 {
     int err;
 
+    if (ist->internal->avctx && (
+        ist->internal->avctx->height ||
+        ist->internal->avctx->sample_rate
+    )) {
+        err = avcodec_parameters_from_context(ist->codecpar, ist->internal->avctx);
+        if (err < 0)
+            return err;
+    }
+
+
     err = avcodec_parameters_copy(st->codecpar, ist->codecpar);
     if (err < 0)
         return err;
@@ -2218,7 +2233,14 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
 
         /* There may be more situations where this would be useful, but this at least
          * handles newly probed codecs properly (i.e. request_probe by mpegts). */
-        if (ist->codecpar->codec_id != st->codecpar->codec_id) {
+        if (ist->codecpar->codec_id != st->codecpar->codec_id
+//PLEX
+         || (ist->internal->avctx && (
+              (ist->internal->avctx->height && !ist->codecpar->height) ||
+              (ist->internal->avctx->sample_rate && !ist->codecpar->sample_rate)
+            ))
+//PLEX
+            ) {
             ret = set_stream_info_from_input_stream(st, pls, ist);
             if (ret < 0) {
                 av_packet_unref(pkt);

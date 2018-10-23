@@ -3116,6 +3116,14 @@ typedef struct AVCodecContext {
      */
     uint16_t *chroma_intra_matrix;
 
+//PLEX
+    /**
+     * Whether or not an H.264 scaling matrix is present
+     * - decoding: Set by h264 decoder
+     */
+    int scaling_matrix_present;
+//PLEX
+
     /**
      * dump format separator.
      * can be ", " or "\n      " or anything else
@@ -3275,6 +3283,10 @@ typedef struct AVCodecContext {
      * used as reference pictures).
      */
     int extra_hw_frames;
+
+//PLEX
+    int separate_fields;
+//PLEX
 } AVCodecContext;
 
 #if FF_API_CODEC_GET_SET
@@ -3510,12 +3522,19 @@ typedef struct AVCodec {
      * See FF_CODEC_CAP_* in internal.h
      */
     int caps_internal;
-
     /**
      * Decoding only, a comma-separated list of bitstream filters to apply to
      * packets before decoding.
      */
     const char *bsfs;
+//PLEX
+    int (*send_packet)(AVCodecContext *avctx, const AVPacket *avpkt);
+    /**
+     * Check whether the codec is available (useful for system codecs). If it's
+     * not, registering the codec will fail and not add it to the codec list.
+     */
+    int (*probe)(struct AVCodec *codec);
+//PLEX
 
     /**
      * Array of pointers to hardware configurations supported by the codec,
@@ -3653,6 +3672,12 @@ typedef struct AVHWAccel {
      * @return zero if successful, a negative value otherwise
      */
     int (*end_frame)(AVCodecContext *avctx);
+
+    /**
+     * Can be used to mutate the AVFrame returned to the user in some way. Is
+     * always called on the frame immediately returned to the user.
+     */
+    int (*finish_frame)(AVCodecContext *avctx, AVFrame *frame);
 
     /**
      * Size of per-frame hardware accelerator private data.
@@ -4000,6 +4025,10 @@ typedef struct AVCodecParameters {
      * Audio only. Number of samples to skip after a discontinuity.
      */
     int seek_preroll;
+
+//PLEX
+    int separate_fields;
+//PLEX
 } AVCodecParameters;
 
 /**
@@ -5019,6 +5048,8 @@ typedef struct AVCodecParserContext {
 /// Set if the parser has a valid file offset
 #define PARSER_FLAG_FETCHED_OFFSET            0x0004
 #define PARSER_FLAG_USE_CODEC_TS              0x1000
+
+#define PARSER_FLAG_SKIP                      0x800000
 
     int64_t offset;      ///< byte offset from starting packet start
     int64_t cur_frame_end[AV_PARSER_PTS_NB];

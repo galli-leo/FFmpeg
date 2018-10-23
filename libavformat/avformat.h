@@ -845,6 +845,7 @@ typedef struct AVStreamInternal AVStreamInternal;
 #define AV_DISPOSITION_CAPTIONS     0x10000
 #define AV_DISPOSITION_DESCRIPTIONS 0x20000
 #define AV_DISPOSITION_METADATA     0x40000
+#define AV_DISPOSITION_DEPENDENT    0x80000 ///< dependent audio stream (mix_type=0 in mpegts)
 
 /**
  * Options for behavior on timestamp wrap detection.
@@ -1005,7 +1006,8 @@ typedef struct AVStream {
      *
      * - demuxing: filled by libavformat on stream creation or in
      *             avformat_find_stream_info()
-     * - muxing: filled by the caller before avformat_write_header()
+     * - muxing: filled by the caller before avformat_write_header();
+     * -         may be modified by libavformat afterwards
      */
     AVCodecParameters *codecpar;
 
@@ -1482,6 +1484,8 @@ typedef struct AVFormatContext {
 #define AVFMT_FLAG_FAST_SEEK   0x80000 ///< Enable fast, but inaccurate seeks for some formats
 #define AVFMT_FLAG_SHORTEST   0x100000 ///< Stop muxing when the shortest stream stops.
 #define AVFMT_FLAG_AUTO_BSF   0x200000 ///< Add bitstream filters as requested by the muxer
+#define AVFMT_FLAG_DISCARD_CORRUPT_TS 0x400000 ///< Discard timestamps of frames marked corrupt
+#define AVFMT_FLAG_FILL_WALLCLOCK_DTS 0x800000 ///< Fill missing or discarded DTS values from wallclock (for live streams)
 
     /**
      * Maximum size of the data read from input for determining

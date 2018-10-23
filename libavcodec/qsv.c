@@ -282,7 +282,7 @@ int ff_qsv_init_internal_session(AVCodecContext *avctx, mfxSession *session,
         desc = "unknown";
     }
 
-    av_log(avctx, AV_LOG_VERBOSE,
+    av_log(avctx, AV_LOG_INFO,
            "Initialized an internal MFX session using %s implementation\n",
            desc);
 

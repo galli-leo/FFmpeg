@@ -31,6 +31,7 @@
 #define AVCODEC_AACTAB_H
 
 #include "libavutil/mem.h"
+#include "libavutil/thread.h"
 #include "aac.h"
 
 #include <stdint.h>
@@ -182,5 +183,11 @@ extern const uint8_t ff_tns_max_bands_1024[13];
 extern const uint8_t ff_tns_max_bands_512 [13];
 extern const uint8_t ff_tns_max_bands_480 [13];
 extern const uint8_t ff_tns_max_bands_128 [13];
+
+extern VLC ff_vlc_scalefactors;
+extern VLC ff_vlc_spectral[11];
+
+void ff_aac_static_table_init_common(void);
+extern AVOnce ff_aac_table_init_common;
 
 #endif /* AVCODEC_AACTAB_H */

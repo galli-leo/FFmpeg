@@ -223,6 +223,9 @@ typedef struct MOVMuxContext {
     int use_stream_ids_as_track_ids;
     int track_ids_ok;
     int write_tmcd;
+//PLEX
+    int video_width, video_height;
+//PLEX
 } MOVMuxContext;
 
 #define FF_MOV_FLAG_RTP_HINT              (1 <<  0)

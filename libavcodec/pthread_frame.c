@@ -756,6 +756,8 @@ int ff_frame_thread_init(AVCodecContext *avctx)
         return AVERROR(ENOMEM);
     }
 
+    avctx->thread_safe_callbacks = 1;
+
     pthread_mutex_init(&fctx->buffer_mutex, NULL);
     pthread_mutex_init(&fctx->hwaccel_mutex, NULL);
     pthread_mutex_init(&fctx->async_mutex, NULL);

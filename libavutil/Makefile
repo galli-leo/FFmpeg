@@ -109,6 +109,7 @@ OBJS = adler32.o                                                        \
        downmix_info.o                                                   \
        error.o                                                          \
        eval.o                                                           \
+       extloader.o                                                      \
        fifo.o                                                           \
        file.o                                                           \
        file_open.o                                                      \

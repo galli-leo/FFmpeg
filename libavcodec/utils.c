@@ -42,6 +42,7 @@
 #include "libavutil/samplefmt.h"
 #include "libavutil/dict.h"
 #include "libavutil/thread.h"
+#include "libavutil/extlib.h"
 #include "avcodec.h"
 #include "decode.h"
 #include "hwaccel.h"
@@ -1121,6 +1122,7 @@ FF_ENABLE_DEPRECATION_WARNINGS
     return 0;
 }
 
+
 const char *avcodec_get_name(enum AVCodecID id)
 {
     const AVCodecDescriptor *cd;
@@ -2068,6 +2070,10 @@ int avcodec_parameters_from_context(AVCodecParameters *par,
         memcpy(par->extradata, codec->extradata, codec->extradata_size);
         par->extradata_size = codec->extradata_size;
     }
+
+//PLEX
+    par->separate_fields = codec->separate_fields;
+//PLEX
 
     return 0;
 }

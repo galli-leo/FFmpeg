@@ -34,6 +34,7 @@ typedef struct H264BSFContext {
     uint8_t  new_idr;
     uint8_t  idr_sps_seen;
     uint8_t  idr_pps_seen;
+    uint8_t  idr_seen;
     int      extradata_parsed;
 } H264BSFContext;
 
@@ -235,6 +236,9 @@ static int h264_mp4toannexb_filter(AVBSFContext *ctx, AVPacket *out)
         if (!s->new_idr && unit_type == 5 && (buf[1] & 0x80))
             s->new_idr = 1;
 
+        if (unit_type == 5)
+            s->idr_seen = 1;
+
         /* prepend only to the first type 5 NAL unit of an IDR picture, if no sps/pps are already present */
         if (s->new_idr && unit_type == 5 && !s->idr_sps_seen && !s->idr_pps_seen) {
             if ((ret=alloc_and_copy(out,
@@ -251,6 +255,12 @@ static int h264_mp4toannexb_filter(AVBSFContext *ctx, AVPacket *out)
             } else if ((ret = alloc_and_copy(out,
                                         ctx->par_out->extradata + s->pps_offset, ctx->par_out->extradata_size - s->pps_offset,
                                         buf, nal_size)) < 0)
+                goto fail;
+        /* some broken files do not have proper IDR NALs, so randomly insert SPS/PPS before normal slice NALs */
+        } else if (unit_type == 1 && !s->idr_seen && !s->idr_sps_seen && !s->idr_pps_seen) {
+            if ((ret=alloc_and_copy(out,
+                               ctx->par_out->extradata, ctx->par_out->extradata_size,
+                               buf, nal_size)) < 0)
                 goto fail;
         } else {
             if ((ret=alloc_and_copy(out, NULL, 0, buf, nal_size)) < 0)

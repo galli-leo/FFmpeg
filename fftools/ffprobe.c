@@ -1661,21 +1661,10 @@ static av_cold int xml_init(WriterContext *wctx)
     return 0;
 }
 
-static const char *xml_escape_str(AVBPrint *dst, const char *src, void *log_ctx)
+static const char *xml_escape_str(AVBPrint *dst, const char *src)
 {
-    const char *p;
-
-    for (p = src; *p; p++) {
-        switch (*p) {
-        case '&' : av_bprintf(dst, "%s", "&amp;");  break;
-        case '<' : av_bprintf(dst, "%s", "&lt;");   break;
-        case '>' : av_bprintf(dst, "%s", "&gt;");   break;
-        case '"' : av_bprintf(dst, "%s", "&quot;"); break;
-        case '\'': av_bprintf(dst, "%s", "&apos;"); break;
-        default: av_bprint_chars(dst, *p, 1);
-        }
-    }
-
+    av_bprint_clear(dst);
+    av_bprint_escape(dst, src, NULL, AV_ESCAPE_MODE_XML, AV_ESCAPE_FLAG_ESCAPE_DOUBLE_QUOTE);
     return dst->str;
 }
 
@@ -1750,14 +1739,12 @@ static void xml_print_str(WriterContext *wctx, const char *key, const char *valu
 
     if (section->flags & SECTION_FLAG_HAS_VARIABLE_FIELDS) {
         XML_INDENT();
-        printf("<%s key=\"%s\"",
-               section->element_name, xml_escape_str(&buf, key, wctx));
-        av_bprint_clear(&buf);
-        printf(" value=\"%s\"/>\n", xml_escape_str(&buf, value, wctx));
+        printf("<%s key=\"%s\"", section->element_name, xml_escape_str(&buf, key));
+        printf(" value=\"%s\"/>\n", xml_escape_str(&buf, value));
     } else {
         if (wctx->nb_item[wctx->level])
             printf(" ");
-        printf("%s=\"%s\"", key, xml_escape_str(&buf, value, wctx));
+        printf("%s=\"%s\"", key, xml_escape_str(&buf, value));
     }
 
     av_bprint_finalize(&buf, NULL);

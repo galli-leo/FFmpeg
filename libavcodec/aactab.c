@@ -28,6 +28,7 @@
  */
 
 #include "libavutil/mem.h"
+#include "libavutil/thread.h"
 #include "aac.h"
 
 #include <stdint.h>
@@ -3280,3 +3281,42 @@ const DECLARE_ALIGNED(32, int, ff_aac_eld_window_480_fixed)[1800] = {
     0xffecff1c, 0xffed391e, 0xffed740c, 0xffedafb1,
     0xffedebe1, 0xffee287d, 0xffee654e, 0xffeea23f,
 };
+
+VLC ff_vlc_scalefactors;
+VLC ff_vlc_spectral[11];
+
+#define AAC_INIT_VLC_STATIC(num, size)                                     \
+    INIT_VLC_STATIC(&ff_vlc_spectral[num], 8, ff_aac_spectral_sizes[num],  \
+         ff_aac_spectral_bits[num], sizeof(ff_aac_spectral_bits[num][0]),  \
+                                    sizeof(ff_aac_spectral_bits[num][0]),  \
+        ff_aac_spectral_codes[num], sizeof(ff_aac_spectral_codes[num][0]), \
+                                    sizeof(ff_aac_spectral_codes[num][0]), \
+        size);
+
+av_cold void ff_aac_static_table_init_common(void);
+av_cold void ff_aac_static_table_init_common(void)
+{
+    AAC_INIT_VLC_STATIC( 0, 304);
+    AAC_INIT_VLC_STATIC( 1, 270);
+    AAC_INIT_VLC_STATIC( 2, 550);
+    AAC_INIT_VLC_STATIC( 3, 300);
+    AAC_INIT_VLC_STATIC( 4, 328);
+    AAC_INIT_VLC_STATIC( 5, 294);
+    AAC_INIT_VLC_STATIC( 6, 306);
+    AAC_INIT_VLC_STATIC( 7, 268);
+    AAC_INIT_VLC_STATIC( 8, 510);
+    AAC_INIT_VLC_STATIC( 9, 366);
+    AAC_INIT_VLC_STATIC(10, 462);
+
+    INIT_VLC_STATIC(&ff_vlc_scalefactors, 7,
+                    FF_ARRAY_ELEMS(ff_aac_scalefactor_code),
+                    ff_aac_scalefactor_bits,
+                    sizeof(ff_aac_scalefactor_bits[0]),
+                    sizeof(ff_aac_scalefactor_bits[0]),
+                    ff_aac_scalefactor_code,
+                    sizeof(ff_aac_scalefactor_code[0]),
+                    sizeof(ff_aac_scalefactor_code[0]),
+                    352);
+}
+
+AVOnce ff_aac_table_init_common = AV_ONCE_INIT;

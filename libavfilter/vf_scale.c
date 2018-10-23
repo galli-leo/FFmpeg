@@ -239,8 +239,16 @@ static int config_props(AVFilterLink *outlink)
     /* Note that force_original_aspect_ratio may overwrite the previous set
      * dimensions so that it is not divisible by the set factors anymore. */
     if (scale->force_original_aspect_ratio) {
-        int tmp_w = av_rescale(h, inlink->w, inlink->h);
-        int tmp_h = av_rescale(w, inlink->h, inlink->w);
+//PLEX: Use the DAR instead of the raw pixel ratio
+        int tmp_w, tmp_h;
+        if (inlink->sample_aspect_ratio.num && inlink->sample_aspect_ratio.den) {
+            tmp_w = av_rescale(h, inlink->w * inlink->sample_aspect_ratio.num, inlink->h * inlink->sample_aspect_ratio.den);
+            tmp_h = av_rescale(w, inlink->h * inlink->sample_aspect_ratio.den, inlink->w * inlink->sample_aspect_ratio.num);
+        } else {
+            tmp_w = av_rescale(h, inlink->w, inlink->h);
+            tmp_h = av_rescale(w, inlink->h, inlink->w);
+        }
+//PLEX
 
         if (scale->force_original_aspect_ratio == 1) {
              w = FFMIN(tmp_w, w);
@@ -249,6 +257,10 @@ static int config_props(AVFilterLink *outlink)
              w = FFMAX(tmp_w, w);
              h = FFMAX(tmp_h, h);
         }
+        //PLEX
+        w &= ~3;
+        h &= ~3;
+        //PLEX
     }
 
     if (w > INT_MAX || h > INT_MAX ||

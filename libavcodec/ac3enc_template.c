@@ -34,7 +34,9 @@
 #include "audiodsp.h"
 #include "internal.h"
 #include "ac3enc.h"
+#if CONFIG_EAC3_ENCODER
 #include "eac3enc.h"
+#endif
 
 
 int AC3_NAME(allocate_sample_buffers)(AC3EncodeContext *s)
@@ -314,8 +316,10 @@ static void apply_channel_coupling(AC3EncodeContext *s)
         }
     }
 
+#if CONFIG_EAC3_ENCODER
     if (CONFIG_EAC3_ENCODER && s->eac3)
         ff_eac3_set_cpl_states(s);
+#endif
 }
 
 

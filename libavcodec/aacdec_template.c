@@ -91,9 +91,6 @@
 
 #include "libavutil/thread.h"
 
-static VLC vlc_scalefactors;
-static VLC vlc_spectral[11];
-
 static int output_configure(AACContext *ac,
                             uint8_t layout_map[MAX_ELEM_ID*4][3], int tags,
                             enum OCStatus oc_type, int get_new_frame);
@@ -997,6 +994,7 @@ static int decode_audio_specific_config_gb(AACContext *ac,
     switch (m4ac->object_type) {
     case AOT_AAC_MAIN:
     case AOT_AAC_LC:
+    case AOT_AAC_SSR:
     case AOT_AAC_LTP:
     case AOT_ER_AAC_LC:
     case AOT_ER_AAC_LD:
@@ -1095,43 +1093,13 @@ static void reset_predictor_group(PredictorState *ps, int group_num)
         reset_predict_state(&ps[i]);
 }
 
-#define AAC_INIT_VLC_STATIC(num, size)                                     \
-    INIT_VLC_STATIC(&vlc_spectral[num], 8, ff_aac_spectral_sizes[num],     \
-         ff_aac_spectral_bits[num], sizeof(ff_aac_spectral_bits[num][0]),  \
-                                    sizeof(ff_aac_spectral_bits[num][0]),  \
-        ff_aac_spectral_codes[num], sizeof(ff_aac_spectral_codes[num][0]), \
-                                    sizeof(ff_aac_spectral_codes[num][0]), \
-        size);
-
-static void aacdec_init(AACContext *ac);
-
 static av_cold void aac_static_table_init(void)
 {
-    AAC_INIT_VLC_STATIC( 0, 304);
-    AAC_INIT_VLC_STATIC( 1, 270);
-    AAC_INIT_VLC_STATIC( 2, 550);
-    AAC_INIT_VLC_STATIC( 3, 300);
-    AAC_INIT_VLC_STATIC( 4, 328);
-    AAC_INIT_VLC_STATIC( 5, 294);
-    AAC_INIT_VLC_STATIC( 6, 306);
-    AAC_INIT_VLC_STATIC( 7, 268);
-    AAC_INIT_VLC_STATIC( 8, 510);
-    AAC_INIT_VLC_STATIC( 9, 366);
-    AAC_INIT_VLC_STATIC(10, 462);
+    ff_thread_once(&ff_aac_table_init_common, &ff_aac_static_table_init_common);
 
     AAC_RENAME(ff_aac_sbr_init)();
 
     ff_aac_tableinit();
-
-    INIT_VLC_STATIC(&vlc_scalefactors, 7,
-                    FF_ARRAY_ELEMS(ff_aac_scalefactor_code),
-                    ff_aac_scalefactor_bits,
-                    sizeof(ff_aac_scalefactor_bits[0]),
-                    sizeof(ff_aac_scalefactor_bits[0]),
-                    ff_aac_scalefactor_code,
-                    sizeof(ff_aac_scalefactor_code[0]),
-                    sizeof(ff_aac_scalefactor_code[0]),
-                    352);
 
     // window initialization
     AAC_RENAME(ff_kbd_window_init)(AAC_RENAME(ff_aac_kbd_long_1024), 4.0, 1024);
@@ -1150,6 +1118,8 @@ static av_cold void aac_static_table_init(void)
 }
 
 static AVOnce aac_table_init = AV_ONCE_INIT;
+
+static void aacdec_init(AACContext *ac);
 
 static av_cold int aac_decode_init(AVCodecContext *avctx)
 {
@@ -1491,7 +1461,7 @@ static int decode_scalefactors(AACContext *ac, INTFLOAT sf[120], GetBitContext *
             } else if ((band_type[idx] == INTENSITY_BT) ||
                        (band_type[idx] == INTENSITY_BT2)) {
                 for (; i < run_end; i++, idx++) {
-                    offset[2] += get_vlc2(gb, vlc_scalefactors.table, 7, 3) - SCALE_DIFF_ZERO;
+                    offset[2] += get_vlc2(gb, ff_vlc_scalefactors.table, 7, 3) - SCALE_DIFF_ZERO;
                     clipped_offset = av_clip(offset[2], -155, 100);
                     if (offset[2] != clipped_offset) {
                         avpriv_request_sample(ac->avctx,
@@ -1510,7 +1480,7 @@ static int decode_scalefactors(AACContext *ac, INTFLOAT sf[120], GetBitContext *
                     if (noise_flag-- > 0)
                         offset[1] += get_bits(gb, NOISE_PRE_BITS) - NOISE_PRE;
                     else
-                        offset[1] += get_vlc2(gb, vlc_scalefactors.table, 7, 3) - SCALE_DIFF_ZERO;
+                        offset[1] += get_vlc2(gb, ff_vlc_scalefactors.table, 7, 3) - SCALE_DIFF_ZERO;
                     clipped_offset = av_clip(offset[1], -100, 155);
                     if (offset[1] != clipped_offset) {
                         avpriv_request_sample(ac->avctx,
@@ -1526,7 +1496,7 @@ static int decode_scalefactors(AACContext *ac, INTFLOAT sf[120], GetBitContext *
                 }
             } else {
                 for (; i < run_end; i++, idx++) {
-                    offset[0] += get_vlc2(gb, vlc_scalefactors.table, 7, 3) - SCALE_DIFF_ZERO;
+                    offset[0] += get_vlc2(gb, ff_vlc_scalefactors.table, 7, 3) - SCALE_DIFF_ZERO;
                     if (offset[0] > 255U) {
                         av_log(ac->avctx, AV_LOG_ERROR,
                                "Scalefactor (%d) out of range.\n", offset[0]);
@@ -1701,7 +1671,7 @@ static int decode_spectrum_and_dequant(AACContext *ac, INTFLOAT coef[1024],
                 const float *vq = ff_aac_codebook_vector_vals[cbt_m1];
 #endif /* !USE_FIXED */
                 const uint16_t *cb_vector_idx = ff_aac_codebook_vector_idx[cbt_m1];
-                VLC_TYPE (*vlc_tab)[2] = vlc_spectral[cbt_m1].table;
+                VLC_TYPE (*vlc_tab)[2] = ff_vlc_spectral[cbt_m1].table;
                 OPEN_READER(re, gb);
 
                 switch (cbt_m1 >> 1) {
@@ -1967,6 +1937,33 @@ static void apply_prediction(AACContext *ac, SingleChannelElement *sce)
         reset_all_predictors(sce->predictor_state);
 }
 
+static void decode_gain_control(SingleChannelElement * sce, GetBitContext * gb)
+{
+    // wd_num, wd_test, aloc_size
+    static const uint8_t gain_mode[4][3] = {
+        {1, 0, 5},  // ONLY_LONG_SEQUENCE = 0,
+        {2, 1, 2},  // LONG_START_SEQUENCE,
+        {8, 0, 2},  // EIGHT_SHORT_SEQUENCE,
+        {2, 1, 5},  // LONG_STOP_SEQUENCE
+    };
+
+    const int mode = sce->ics.window_sequence[0];
+    uint8_t bd, wd, ad;
+
+    // FIXME: Store the gain control data on |sce| and do something with it.
+    uint8_t max_band = get_bits(gb, 2);
+    for (bd = 0; bd < max_band; bd++) {
+        for (wd = 0; wd < gain_mode[mode][0]; wd++) {
+            uint8_t adjust_num = get_bits(gb, 3);
+            for (ad = 0; ad < adjust_num; ad++) {
+                skip_bits(gb, 4 + ((wd == 0 && gain_mode[mode][1])
+                                     ? 4
+                                     : gain_mode[mode][2]));
+            }
+        }
+    }
+}
+
 /**
  * Decode an individual_channel_stream payload; reference: table 4.44.
  *
@@ -2034,9 +2031,11 @@ static int decode_ics(AACContext *ac, SingleChannelElement *sce,
                 goto fail;
         }
         if (!eld_syntax && get_bits1(gb)) {
-            avpriv_request_sample(ac->avctx, "SSR");
-            ret = AVERROR_PATCHWELCOME;
-            goto fail;
+            decode_gain_control(sce, gb);
+            if (!ac->warned_gain_control) {
+                avpriv_report_missing_feature(ac->avctx, "Gain control");
+                ac->warned_gain_control = 1;
+            }
         }
         // I see no textual basis in the spec for this occurring after SSR gain
         // control, but this is what both reference and real implmentations do
@@ -2246,7 +2245,7 @@ static int decode_cce(AACContext *ac, GetBitContext *gb, ChannelElement *che)
         INTFLOAT gain_cache = FIXR10(1.);
         if (c) {
             cge = coup->coupling_point == AFTER_IMDCT ? 1 : get_bits1(gb);
-            gain = cge ? get_vlc2(gb, vlc_scalefactors.table, 7, 3) - 60: 0;
+            gain = cge ? get_vlc2(gb, ff_vlc_scalefactors.table, 7, 3) - 60: 0;
             gain_cache = GET_GAIN(scale, gain);
 #if USE_FIXED
             if ((abs(gain_cache)-1024) >> 3 > 30)
@@ -2260,7 +2259,7 @@ static int decode_cce(AACContext *ac, GetBitContext *gb, ChannelElement *che)
                 for (sfb = 0; sfb < sce->ics.max_sfb; sfb++, idx++) {
                     if (sce->band_type[idx] != ZERO_BT) {
                         if (!cge) {
-                            int t = get_vlc2(gb, vlc_scalefactors.table, 7, 3) - 60;
+                            int t = get_vlc2(gb, ff_vlc_scalefactors.table, 7, 3) - 60;
                             if (t) {
                                 int s = 1;
                                 t = gain += t;

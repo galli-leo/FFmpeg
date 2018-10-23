@@ -218,6 +218,9 @@ typedef struct AVCodecInternal {
 
     /* to prevent infinite loop on errors when draining */
     int nb_draining_errors;
+
+    /* PLEX: buffered packet for handling send_packet failures */
+    AVPacket send_pkt;
 } AVCodecInternal;
 
 struct AVCodecDefault {
@@ -382,6 +385,10 @@ int ff_decode_frame_props(AVCodecContext *avctx, AVFrame *frame);
 AVCPBProperties *ff_add_cpb_side_data(AVCodecContext *avctx);
 
 int ff_side_data_set_encoder_stats(AVPacket *pkt, int quality, int64_t *error, int error_count, int pict_type);
+
+void ff_avcodec_scan_new_things(void);
+
+void ff_set_hwaccel_next(AVHWAccel *(*new_hook)(const struct AVHWAccel *hwaccel));
 
 /**
  * Check AVFrame for A53 side data and allocate and fill SEI message with A53 info

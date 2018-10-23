@@ -21,6 +21,10 @@
 
 #include <stdint.h>
 
+//PLEX
+#include <stdlib.h>
+//PLEX
+
 #include "avc.h"
 #include "hevc.h"
 #include "avformat.h"
@@ -1941,14 +1945,14 @@ static int mkv_write_header(AVFormatContext *s)
     // reserve space for the duration
     mkv->duration = 0;
     mkv->duration_offset = avio_tell(pb);
-    if (!mkv->is_live) {
+    if (!mkv->is_live || 1) { // PLEX: short-circuit
         int64_t metadata_duration = get_metadata_duration(s);
 
         if (s->duration > 0) {
             int64_t scaledDuration = av_rescale(s->duration, 1000, AV_TIME_BASE);
             put_ebml_float(pb, MATROSKA_ID_DURATION, scaledDuration);
             av_log(s, AV_LOG_DEBUG, "Write early duration from recording time = %" PRIu64 "\n", scaledDuration);
-        } else if (metadata_duration > 0) {
+        } else if (metadata_duration > 0 && !(s->flags & AVFMT_FLAG_BITEXACT)) {
             int64_t scaledDuration = av_rescale(metadata_duration, 1000, AV_TIME_BASE);
             put_ebml_float(pb, MATROSKA_ID_DURATION, scaledDuration);
             av_log(s, AV_LOG_DEBUG, "Write early duration from metadata = %" PRIu64 "\n", scaledDuration);
@@ -2266,7 +2270,8 @@ static int mkv_check_new_extra_data(AVFormatContext *s, AVPacket *pkt)
 
     switch (par->codec_id) {
     case AV_CODEC_ID_AAC:
-        if (side_data_size && (s->pb->seekable & AVIO_SEEKABLE_NORMAL) && !mkv->is_live) {
+        if (side_data_size && !par->extradata_size &&
+            (s->pb->seekable & AVIO_SEEKABLE_NORMAL) && !mkv->is_live) {
             int filler, output_sample_rate = 0;
             int64_t curpos;
             ret = get_aac_sample_rates(s, side_data, side_data_size, &track->sample_rate,
@@ -2341,6 +2346,14 @@ static int mkv_write_packet_internal(AVFormatContext *s, AVPacket *pkt, int add_
     int64_t ts = mkv->tracks[pkt->stream_index].write_dts ? pkt->dts : pkt->pts;
     int64_t relative_packet_pos;
     int dash_tracknum = mkv->is_dash ? mkv->dash_track_number : pkt->stream_index + 1;
+
+    //PLEX
+    if (ts == AV_NOPTS_VALUE && !mkv->tracks[pkt->stream_index].write_dts) {
+        av_log(s, AV_LOG_WARNING, "Switching to DTS.\n");
+        mkv->tracks[pkt->stream_index].write_dts = 1;
+        ts = pkt->dts;
+    }
+    //PLEX
 
     if (ts == AV_NOPTS_VALUE) {
         av_log(s, AV_LOG_ERROR, "Can't write packet with unknown timestamp\n");

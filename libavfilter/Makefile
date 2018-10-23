@@ -384,6 +384,8 @@ OBJS-$(CONFIG_YUVTESTSRC_FILTER)             += vsrc_testsrc.o
 
 OBJS-$(CONFIG_NULLSINK_FILTER)               += vsink_nullsink.o
 
+OBJS-$(CONFIG_INLINEASS_FILTER)              += vf_inlineass.o
+
 # multimedia filters
 OBJS-$(CONFIG_ABITSCOPE_FILTER)              += avf_abitscope.o
 OBJS-$(CONFIG_ADRAWGRAPH_FILTER)             += f_drawgraph.o

@@ -485,6 +485,25 @@ static void flush_if_needed(AVFormatContext *s)
     }
 }
 
+static int write_header_internal(AVFormatContext *s)
+{
+    if (!(s->oformat->flags & AVFMT_NOFILE) && s->pb)
+        avio_write_marker(s->pb, AV_NOPTS_VALUE, AVIO_DATA_MARKER_HEADER);
+    if (s->oformat->write_header) {
+        int ret = s->oformat->write_header(s);
+        if (ret >= 0 && s->pb && s->pb->error < 0)
+            ret = s->pb->error;
+        s->internal->write_header_ret = ret;
+        if (ret < 0)
+            return ret;
+        flush_if_needed(s);
+    }
+    s->internal->header_written = 1;
+    if (!(s->oformat->flags & AVFMT_NOFILE) && s->pb)
+        avio_write_marker(s->pb, AV_NOPTS_VALUE, AVIO_DATA_MARKER_UNKNOWN);
+    return 0;
+}
+
 int avformat_init_output(AVFormatContext *s, AVDictionary **options)
 {
     int ret = 0;
@@ -515,18 +534,11 @@ int avformat_write_header(AVFormatContext *s, AVDictionary **options)
         if ((ret = avformat_init_output(s, options)) < 0)
             return ret;
 
-    if (!(s->oformat->flags & AVFMT_NOFILE) && s->pb)
-        avio_write_marker(s->pb, AV_NOPTS_VALUE, AVIO_DATA_MARKER_HEADER);
-    if (s->oformat->write_header) {
-        ret = s->oformat->write_header(s);
-        if (ret >= 0 && s->pb && s->pb->error < 0)
-            ret = s->pb->error;
+    if (!(s->oformat->check_bitstream && s->flags & AVFMT_FLAG_AUTO_BSF)) {
+        ret = write_header_internal(s);
         if (ret < 0)
             goto fail;
-        flush_if_needed(s);
     }
-    if (!(s->oformat->flags & AVFMT_NOFILE) && s->pb)
-        avio_write_marker(s->pb, AV_NOPTS_VALUE, AVIO_DATA_MARKER_UNKNOWN);
 
     if (!s->internal->streams_initialized) {
         if ((ret = init_pts(s)) < 0)
@@ -622,7 +634,9 @@ static int compute_muxer_pkt_fields(AVFormatContext *s, AVStream *st, AVPacket *
         av_log(s, AV_LOG_ERROR,
                "Application provided invalid, non monotonically increasing dts to muxer in stream %d: %s >= %s\n",
                st->index, av_ts2str(st->cur_dts), av_ts2str(pkt->dts));
+#if 0 //PLEX
         return AVERROR(EINVAL);
+#endif //PLEX
     }
     if (pkt->dts != AV_NOPTS_VALUE && pkt->pts != AV_NOPTS_VALUE && pkt->pts < pkt->dts) {
         av_log(s, AV_LOG_ERROR,
@@ -738,6 +752,12 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
         }
     }
 
+    if (!s->internal->header_written) {
+        ret = s->internal->write_header_ret ? s->internal->write_header_ret : write_header_internal(s);
+        if (ret < 0)
+            goto fail;
+    }
+
     if ((pkt->flags & AV_PKT_FLAG_UNCODED_FRAME)) {
         AVFrame *frame = (AVFrame *)pkt->data;
         av_assert0(pkt->size == UNCODED_FRAME_PACKET_SIZE);
@@ -752,6 +772,8 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
         if (s->pb->error < 0)
             ret = s->pb->error;
     }
+
+fail:
 
     if (ret < 0) {
         pkt->pts = pts_backup;
@@ -832,12 +854,27 @@ static int prepare_input_packet(AVFormatContext *s, AVPacket *pkt)
     return 0;
 }
 
+static int do_new_extradata_copy(AVCodecParameters *par, AVPacket *pkt) {
+    int side_size;
+    uint8_t *side = av_packet_get_side_data(pkt, AV_PKT_DATA_NEW_EXTRADATA, &side_size);
+    if (side) {
+        uint8_t *new_extra = av_mallocz(side_size + AV_INPUT_BUFFER_PADDING_SIZE);
+        if (!new_extra)
+            return AVERROR(ENOMEM);
+        memcpy(new_extra, side, side_size);
+        av_free(par->extradata);
+        par->extradata = new_extra;
+        par->extradata_size = side_size;
+    }
+    return 1;
+}
+
 static int do_packet_auto_bsf(AVFormatContext *s, AVPacket *pkt) {
     AVStream *st = s->streams[pkt->stream_index];
     int i, ret;
 
     if (!(s->flags & AVFMT_FLAG_AUTO_BSF))
-        return 1;
+        return do_new_extradata_copy(st->codecpar, pkt);
 
     if (s->oformat->check_bitstream) {
         if (!st->internal->bitstream_checked) {
@@ -847,6 +884,9 @@ static int do_packet_auto_bsf(AVFormatContext *s, AVPacket *pkt) {
                 st->internal->bitstream_checked = 1;
         }
     }
+
+    if (!st->internal->nb_bsfcs)
+        return do_new_extradata_copy(st->codecpar, pkt);
 
     for (i = 0; i < st->internal->nb_bsfcs; i++) {
         AVBSFContext *ctx = st->internal->bsfcs[i];
@@ -872,6 +912,20 @@ static int do_packet_auto_bsf(AVFormatContext *s, AVPacket *pkt) {
             return 0;
         }
     }
+
+    if (!s->internal->header_written) {
+        int side_size;
+        uint8_t *side = av_packet_get_side_data(pkt, AV_PKT_DATA_NEW_EXTRADATA, &side_size);
+        if (side && side_size > 0 && (side_size != st->codecpar->extradata_size ||
+                                      memcmp(side, st->codecpar->extradata, side_size))) {
+            av_freep(&st->codecpar->extradata);
+            if ((ret = ff_alloc_extradata(st->codecpar, side_size)) < 0)
+                return ret;
+            memcpy(st->codecpar->extradata, side, side_size);
+            st->codecpar->extradata_size = side_size;
+        }
+    }
+
     return 1;
 }
 
@@ -885,6 +939,11 @@ int av_write_frame(AVFormatContext *s, AVPacket *pkt)
 
     if (!pkt) {
         if (s->oformat->flags & AVFMT_ALLOW_FLUSH) {
+            if (!s->internal->header_written) {
+                ret = s->internal->write_header_ret ? s->internal->write_header_ret : write_header_internal(s);
+                if (ret < 0)
+                    return ret;
+            }
             ret = s->oformat->write_packet(s, NULL);
             flush_if_needed(s);
             if (ret >= 0 && s->pb && s->pb->error < 0)
@@ -1268,8 +1327,14 @@ int av_write_trailer(AVFormatContext *s)
             goto fail;
     }
 
+    if (!s->internal->header_written) {
+        ret = s->internal->write_header_ret ? s->internal->write_header_ret : write_header_internal(s);
+        if (ret < 0)
+            goto fail;
+    }
+
 fail:
-    if (s->oformat->write_trailer) {
+    if (s->internal->header_written && s->oformat->write_trailer) {
         if (!(s->oformat->flags & AVFMT_NOFILE) && s->pb)
             avio_write_marker(s->pb, AV_NOPTS_VALUE, AVIO_DATA_MARKER_TRAILER);
         if (ret >= 0) {
@@ -1282,6 +1347,7 @@ fail:
     if (s->oformat->deinit)
         s->oformat->deinit(s);
 
+    s->internal->header_written =
     s->internal->initialized =
     s->internal->streams_initialized = 0;
 

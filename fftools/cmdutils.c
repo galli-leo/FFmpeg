@@ -885,6 +885,12 @@ int opt_loglevel(void *optctx, const char *opt, const char *arg)
     int level;
     int flags;
     int i;
+//PLEX
+    typedef void (*av_log_set_level_fn)(int);
+    av_log_set_level_fn set_level_fn = (av_log_set_level_fn) optctx;
+    if (!set_level_fn)
+        set_level_fn = &av_log_set_level;
+//PLEX
 
     flags = av_log_get_flags();
     tail = strstr(arg, "repeat");
@@ -901,7 +907,7 @@ int opt_loglevel(void *optctx, const char *opt, const char *arg)
 
     for (i = 0; i < FF_ARRAY_ELEMS(log_levels); i++) {
         if (!strcmp(log_levels[i].name, arg)) {
-            av_log_set_level(log_levels[i].level);
+            set_level_fn(log_levels[i].level); //PLEX
             return 0;
         }
     }
@@ -914,7 +920,7 @@ int opt_loglevel(void *optctx, const char *opt, const char *arg)
             av_log(NULL, AV_LOG_FATAL, "\"%s\"\n", log_levels[i].name);
         exit_program(1);
     }
-    av_log_set_level(level);
+    set_level_fn(level); //PLEX
     return 0;
 }
 

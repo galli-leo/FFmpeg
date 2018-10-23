@@ -51,6 +51,9 @@ typedef struct SegmentListEntry {
     char *filename;
     struct SegmentListEntry *next;
     int64_t last_duration;
+//PLEX
+    double end_audio_time, end_video_time;
+//PLEX
 } SegmentListEntry;
 
 typedef enum {
@@ -124,6 +127,9 @@ typedef struct SegmentContext {
     SegmentListEntry cur_entry;
     SegmentListEntry *segment_list_entries;
     SegmentListEntry *segment_list_entries_end;
+
+    int segment_copyts;    ///< PLEX
+    int list_separate_times;    ///< PLEX
 } SegmentContext;
 
 static void print_csv_escaped_str(AVIOContext *ctx, const char *str)
@@ -227,6 +233,12 @@ static int set_segment_filename(AVFormatContext *s)
              seg->entry_prefix ? seg->entry_prefix : "",
              av_basename(oc->url));
 
+    // PLEX
+    // Write segment data to temp file, so we don't accidentally grab a partial segment.
+    if(!seg->list)
+      av_strlcatf(oc->filename, sizeof(oc->filename), ".tmp");
+    // PLEX
+
     return 0;
 }
 
@@ -312,6 +324,7 @@ static int segment_list_open(AVFormatContext *s)
 
 static void segment_list_print_entry(AVIOContext      *list_ioctx,
                                      ListType          list_type,
+                                     int               list_separate_times,
                                      const SegmentListEntry *list_entry,
                                      void *log_ctx)
 {
@@ -322,7 +335,10 @@ static void segment_list_print_entry(AVIOContext      *list_ioctx,
     case LIST_TYPE_CSV:
     case LIST_TYPE_EXT:
         print_csv_escaped_str(list_ioctx, list_entry->filename);
-        avio_printf(list_ioctx, ",%f,%f\n", list_entry->start_time, list_entry->end_time);
+        if (list_separate_times)
+            avio_printf(list_ioctx, ",%f,%f,%f,%f\n", list_entry->start_time, list_entry->end_time, list_entry->end_audio_time, list_entry->end_video_time);
+        else
+            avio_printf(list_ioctx, ",%f,%f\n", list_entry->start_time, list_entry->end_time);
         break;
     case LIST_TYPE_M3U8:
         avio_printf(list_ioctx, "#EXTINF:%f,\n%s\n",
@@ -396,14 +412,14 @@ static int segment_end(AVFormatContext *s, int write_trailer, int is_last)
             if ((ret = segment_list_open(s)) < 0)
                 goto end;
             for (entry = seg->segment_list_entries; entry; entry = entry->next)
-                segment_list_print_entry(seg->list_pb, seg->list_type, entry, s);
+                segment_list_print_entry(seg->list_pb, seg->list_type, seg->list_separate_times, entry, s);
             if (seg->list_type == LIST_TYPE_M3U8 && is_last)
                 avio_printf(seg->list_pb, "#EXT-X-ENDLIST\n");
             ff_format_io_close(s, &seg->list_pb);
             if (seg->use_rename)
                 ff_rename(seg->temp_list_filename, seg->list, s);
         } else {
-            segment_list_print_entry(seg->list_pb, seg->list_type, &seg->cur_entry, s);
+            segment_list_print_entry(seg->list_pb, seg->list_type, seg->list_separate_times, &seg->cur_entry, s);
             avio_flush(seg->list_pb);
         }
     }
@@ -437,6 +453,18 @@ static int segment_end(AVFormatContext *s, int write_trailer, int is_last)
 
 end:
     ff_format_io_close(oc, &oc->pb);
+
+    // PLEX
+
+    // Now rename the temporary file.
+    if (!seg->list) {
+        char* final_filename = av_strdup(oc->filename);
+        final_filename[strlen(final_filename)-4] = '\0';
+        rename(oc->filename, final_filename);
+        av_free(final_filename);
+    }
+
+    // PLEX
 
     return ret;
 }
@@ -659,6 +687,11 @@ static int seg_init(AVFormatContext *s)
         seg->write_header_trailer = 1;
         seg->individual_header_trailer = 0;
     }
+
+    //PLEX
+    if (seg->segment_copyts)
+        seg->segment_count = seg->segment_idx;
+    //PLEX
 
     if (seg->initial_offset > 0) {
         av_log(s, AV_LOG_WARNING, "NOTE: the option initial_offset is deprecated,"
@@ -909,6 +942,10 @@ calc_times:
         seg->cur_entry.start_time = (double)pkt->pts * av_q2d(st->time_base);
         seg->cur_entry.start_pts = av_rescale_q(pkt->pts, st->time_base, AV_TIME_BASE_Q);
         seg->cur_entry.end_time = seg->cur_entry.start_time;
+//PLEX
+        seg->cur_entry.end_audio_time = -1;
+        seg->cur_entry.end_video_time = -1;
+//PLEX
 
         if (seg->times || (!seg->frames && !seg->use_clocktime) && seg->write_empty)
             goto calc_times;
@@ -945,6 +982,18 @@ calc_times:
            av_ts2str(pkt->pts), av_ts2timestr(pkt->pts, &st->time_base),
            av_ts2str(pkt->dts), av_ts2timestr(pkt->dts, &st->time_base));
 
+//PLEX
+    if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO || st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+    {
+        enum AVMediaType codec_type = st->codecpar->codec_type;
+        double end_time = (double)(pkt->pts + pkt->duration) * av_q2d(st->time_base);
+
+        if (codec_type == AVMEDIA_TYPE_AUDIO)
+            seg->cur_entry.end_audio_time = FFMAX(seg->cur_entry.end_audio_time, end_time);
+        else if (codec_type == AVMEDIA_TYPE_VIDEO)
+            seg->cur_entry.end_video_time = FFMAX(seg->cur_entry.end_video_time, end_time);
+    }
+//PLEX
     ret = ff_write_chained(seg->avf, pkt->stream_index, pkt, s, seg->initial_offset || seg->reset_timestamps);
 
 fail:
@@ -1041,6 +1090,8 @@ static const AVOption options[] = {
     { "m3u8", "M3U8 format",     0, AV_OPT_TYPE_CONST, {.i64=LIST_TYPE_M3U8 }, INT_MIN, INT_MAX, E, "list_type" },
     { "hls", "Apple HTTP Live Streaming compatible", 0, AV_OPT_TYPE_CONST, {.i64=LIST_TYPE_M3U8 }, INT_MIN, INT_MAX, E, "list_type" },
 
+    { "segment_list_separate_stream_times", "adds additional fields in segment list for separate audio and video end times",   OFFSET(list_separate_times),    AV_OPT_TYPE_BOOL,   {.i64 = 0}, 0, 1, E}, //PLEX
+
     { "segment_atclocktime",      "set segment to be cut at clocktime",  OFFSET(use_clocktime), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, E},
     { "segment_clocktime_offset", "set segment clocktime offset",        OFFSET(clocktime_offset), AV_OPT_TYPE_DURATION, {.i64 = 0}, 0, 86400000000LL, E},
     { "segment_clocktime_wrap_duration", "set segment clocktime wrapping duration", OFFSET(clocktime_wrap_duration), AV_OPT_TYPE_DURATION, {.i64 = INT64_MAX}, 0, INT64_MAX, E},
@@ -1052,6 +1103,7 @@ static const AVOption options[] = {
     { "segment_list_entry_prefix", "set base url prefix for segments", OFFSET(entry_prefix), AV_OPT_TYPE_STRING,  {.str = NULL}, 0, 0, E },
     { "segment_start_number", "set the sequence number of the first segment", OFFSET(segment_idx), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, E },
     { "segment_wrap_number", "set the number of wrap before the first segment", OFFSET(segment_idx_wrap_nb), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, E },
+    { "segment_copyts",    "adjust timestamps for -copyts setting",      OFFSET(segment_copyts), AV_OPT_TYPE_BOOL,   {.i64 = 0}, 0, 1,       E }, //PLEX
     { "strftime",          "set filename expansion with strftime at segment creation", OFFSET(use_strftime), AV_OPT_TYPE_BOOL, {.i64 = 0 }, 0, 1, E },
     { "increment_tc", "increment timecode between each segment", OFFSET(increment_tc), AV_OPT_TYPE_BOOL, {.i64 = 0 }, 0, 1, E },
     { "break_non_keyframes", "allow breaking segments on non-keyframes", OFFSET(break_non_keyframes), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, E },

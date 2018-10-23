@@ -2188,6 +2188,14 @@ static int matroska_parse_tracks(AVFormatContext *s)
             av_freep(&key_id_base64);
         }
 
+        //PLEX
+        if (encodings_list->nb_elem == 1) {
+            av_dict_set_int(&st->metadata, "encoding_type", encodings[0].type, 0);
+            if (encodings[0].type == 0)
+              av_dict_set_int(&st->metadata, "compression_algo", encodings[0].compression.algo, 0);
+        }
+        //PLEX
+
         if (!strcmp(track->codec_id, "V_MS/VFW/FOURCC") &&
              track->codec_priv.size >= 40               &&
             track->codec_priv.data) {
@@ -3544,9 +3552,17 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
                   SEEK_SET);
         matroska->current_id = 0;
         while ((index = av_index_search_timestamp(st, timestamp, flags)) < 0 || index == st->nb_index_entries - 1) {
+            int ret;
+            int64_t pos = avio_tell(matroska->ctx->pb);
             matroska_clear_queue(matroska);
-            if (matroska_parse_cluster(matroska) < 0)
-                break;
+            if ((ret = matroska_parse_cluster(matroska)) < 0) {
+                if (ret == AVERROR_EOF) {
+                    break;
+                } else if(matroska_resync(matroska, pos) < 0) {
+                    index = -1;
+                    break;
+                }
+            }
         }
     }
 
@@ -3578,6 +3594,7 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
     ff_update_cur_dts(s, st, st->index_entries[index].timestamp);
     return 0;
 err:
+    av_log(s, st->nb_index_entries ? AV_LOG_WARNING : AV_LOG_VERBOSE, "Failed to seek using index; falling back to generic seek");
     // slightly hackish but allows proper fallback to
     // the generic seeking code.
     matroska_clear_queue(matroska);

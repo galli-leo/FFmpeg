@@ -296,6 +296,11 @@ int ff_decode_get_packet(AVCodecContext *avctx, AVPacket *pkt)
     AVCodecInternal *avci = avctx->internal;
     int ret;
 
+    if (avci->send_pkt.buf) {
+        av_packet_move_ref(pkt, &avci->send_pkt);
+        return 0;
+    }
+
     if (avci->draining)
         return AVERROR_EOF;
 
@@ -412,6 +417,11 @@ static int decode_simple_internal(AVCodecContext *avctx, AVFrame *frame)
             }
         }
     }
+    if (ret >= 0 && avctx->hwaccel && avctx->hwaccel->finish_frame) {
+        ret = avctx->hwaccel->finish_frame(avctx, frame);
+        if (ret < 0)
+            got_frame = 0;
+    }
     emms_c();
     actual_got_frame = got_frame;
 
@@ -422,6 +432,11 @@ static int decode_simple_internal(AVCodecContext *avctx, AVFrame *frame)
             frame->best_effort_timestamp = guess_correct_pts(avctx,
                                                              frame->pts,
                                                              frame->pkt_dts);
+        if (avctx->field_order == AV_FIELD_UNKNOWN &&
+            avctx->codec_type == AVMEDIA_TYPE_VIDEO &&
+            frame->interlaced_frame) {
+            avctx->field_order = (frame->top_field_first ? AV_FIELD_TT : AV_FIELD_BB);
+        }
     } else if (avctx->codec->type == AVMEDIA_TYPE_AUDIO) {
         uint8_t *side;
         int side_size;
@@ -606,9 +621,27 @@ static int decode_receive_frame_internal(AVCodecContext *avctx, AVFrame *frame)
 
     av_assert0(!frame->buf[0]);
 
-    if (avctx->codec->receive_frame)
+    if (avctx->codec->receive_frame) {
         ret = avctx->codec->receive_frame(avctx, frame);
-    else
+//PLEX
+        // Emulate support for the send_packet callback (removed upstream)
+        if (ret == AVERROR(EAGAIN) && avctx->codec->send_packet) {
+            AVPacket tmp = {0};
+            ret = ff_decode_get_packet(avctx, &tmp);
+            // The following call should never return EAGAIN, as receive_frame
+            // already returned that.
+            if (ret == AVERROR_EOF) {
+                avctx->codec->send_packet(avctx, NULL);
+                ret = AVERROR(EAGAIN);
+            } else if (ret >= 0) {
+                ret = avctx->codec->send_packet(avctx, &tmp);
+                if (ret == AVERROR(EAGAIN))
+                    av_packet_move_ref(&avci->send_pkt, &tmp);
+                ret = AVERROR(EAGAIN);
+            }
+        }
+//PLEX
+    } else
         ret = decode_simple_receive_frame(avctx, frame);
 
     if (ret == AVERROR_EOF)
@@ -1952,6 +1985,7 @@ void avcodec_flush_buffers(AVCodecContext *avctx)
     av_frame_unref(avctx->internal->compat_decode_frame);
     av_packet_unref(avctx->internal->buffer_pkt);
     avctx->internal->buffer_pkt_valid = 0;
+    av_packet_unref(&avctx->internal->send_pkt);
 
     av_packet_unref(avctx->internal->ds.in_pkt);
 

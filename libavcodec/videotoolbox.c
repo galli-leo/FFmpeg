@@ -45,8 +45,10 @@ enum { kCMVideoCodecType_HEVC = 'hvc1' };
 
 static void videotoolbox_buffer_release(void *opaque, uint8_t *data)
 {
-    CVPixelBufferRef cv_buffer = (CVImageBufferRef)data;
+    CVPixelBufferRef cv_buffer = *(CVPixelBufferRef *)data;
     CVPixelBufferRelease(cv_buffer);
+
+    av_free(data);
 }
 
 static int videotoolbox_buffer_copy(VTContext *vtctx,
@@ -69,19 +71,47 @@ static int videotoolbox_buffer_copy(VTContext *vtctx,
     return 0;
 }
 
+static int videotoolbox_postproc_frame(void *avctx, AVFrame *frame)
+{
+    CVPixelBufferRef ref = *(CVPixelBufferRef *)frame->buf[0]->data;
+
+    if (!ref) {
+        av_log(avctx, AV_LOG_WARNING, "No frame decoded?\n");
+        av_frame_unref(frame);
+        return AVERROR_INVALIDDATA;
+    }
+
+    frame->data[3] = (uint8_t*)ref;
+
+    return 0;
+}
+
 int ff_videotoolbox_alloc_frame(AVCodecContext *avctx, AVFrame *frame)
 {
+    size_t      size = sizeof(CVPixelBufferRef);
+    uint8_t    *data = NULL;
+    AVBufferRef *buf = NULL;
     int ret = ff_attach_decode_data(frame);
+    FrameDecodeData *fdd;
     if (ret < 0)
         return ret;
+
+    data = av_mallocz(size);
+    if (!data)
+        return AVERROR(ENOMEM);
+    buf = av_buffer_create(data, size, videotoolbox_buffer_release, NULL, 0);
+    if (!buf) {
+        av_freep(&data);
+        return AVERROR(ENOMEM);
+    }
+    frame->buf[0] = buf;
+
+    fdd = (FrameDecodeData*)frame->private_ref->data;
+    fdd->post_process = videotoolbox_postproc_frame;
 
     frame->width  = avctx->width;
     frame->height = avctx->height;
     frame->format = avctx->pix_fmt;
-    frame->buf[0] = av_buffer_alloc(1);
-
-    if (!frame->buf[0])
-        return AVERROR(ENOMEM);
 
     return 0;
 }
@@ -285,20 +315,16 @@ CFDataRef ff_videotoolbox_hvcc_extradata_create(AVCodecContext *avctx)
     return data;
 }
 
-int ff_videotoolbox_buffer_create(VTContext *vtctx, AVFrame *frame)
+static int videotoolbox_set_frame(AVCodecContext *avctx, AVFrame *frame)
 {
-    av_buffer_unref(&frame->buf[0]);
+    VTContext *vtctx = avctx->internal->hwaccel_priv_data;
+    av_assert0(frame->buf[0]);
+    av_assert0(!frame->data[3]);
 
-    frame->buf[0] = av_buffer_create((uint8_t*)vtctx->frame,
-                                     sizeof(vtctx->frame),
-                                     videotoolbox_buffer_release,
-                                     NULL,
-                                     AV_BUFFER_FLAG_READONLY);
-    if (!frame->buf[0]) {
-        return AVERROR(ENOMEM);
-    }
+    CVPixelBufferRef *ref = (CVPixelBufferRef *)frame->buf[0]->data;
+    av_assert0(!*ref);
 
-    frame->data[3] = (uint8_t*)vtctx->frame;
+    *ref = vtctx->frame;
     vtctx->frame = NULL;
 
     return 0;
@@ -406,7 +432,7 @@ static int videotoolbox_buffer_create(AVCodecContext *avctx, AVFrame *frame)
     AVHWFramesContext *cached_frames;
     int ret;
 
-    ret = ff_videotoolbox_buffer_create(vtctx, frame);
+    ret = videotoolbox_set_frame(avctx, frame);
     if (ret < 0)
         return ret;
 
