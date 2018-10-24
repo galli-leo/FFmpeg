@@ -947,6 +947,7 @@ int opt_loglevel(void *optctx, const char *opt, const char *arg)
             av_log(NULL, AV_LOG_FATAL, "\"%s\"\n", log_levels[i].name);
         exit_program(1);
     }
+end:
     set_level_fn(level); //PLEX
     av_log_set_flags(flags);
     return 0;

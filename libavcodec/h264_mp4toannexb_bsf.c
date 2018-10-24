@@ -260,7 +260,7 @@ static int h264_mp4toannexb_filter(AVBSFContext *ctx, AVPacket *out)
         } else if (unit_type == 1 && !s->idr_seen && !s->idr_sps_seen && !s->idr_pps_seen) {
             if ((ret=alloc_and_copy(out,
                                ctx->par_out->extradata, ctx->par_out->extradata_size,
-                               buf, nal_size)) < 0)
+                               buf, nal_size, 1)) < 0)
                 goto fail;
         } else {
             if ((ret=alloc_and_copy(out, NULL, 0, buf, nal_size, unit_type == 7 || unit_type == 8)) < 0)
