@@ -1603,14 +1603,6 @@ static const AVCodecTag codec_cover_image_tags[] = {
 
 static unsigned int validate_codec_tag(const AVCodecTag *const *tags,
                                        unsigned int tag, int codec_id)
-static const AVCodecTag codec_cover_image_tags[] = {
-    { AV_CODEC_ID_MJPEG,  0xD },
-    { AV_CODEC_ID_PNG,    0xE },
-    { AV_CODEC_ID_BMP,    0x1B },
-    { AV_CODEC_ID_NONE, 0 },
-};
-
-static int mov_find_codec_tag(AVFormatContext *s, MOVTrack *track)
 {
     int i;
 
