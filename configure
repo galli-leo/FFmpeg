@@ -6146,26 +6146,26 @@ check_func_headers glob.h glob
 enabled xlib &&
     check_lib xlib "X11/Xlib.h X11/extensions/Xvlib.h" XvGetPortAttribute -lXv -lX11 -lXext
 
-check_header direct.h
-check_header dirent.h
-check_header dxgidebug.h
-check_header dxva.h
-check_header dxva2api.h -D_WIN32_WINNT=0x0600
-check_header io.h
-check_header linux/perf_event.h
-check_header libcrystalhd/libcrystalhd_if.h
-check_header malloc.h
-check_header mftransform.h
-check_header net/udplite.h
-check_header poll.h
-check_header sys/param.h
-check_header sys/resource.h
-check_header sys/select.h
-check_header sys/time.h
-check_header sys/un.h
-check_header termios.h
-check_header unistd.h
-check_header valgrind/valgrind.h
+check_headers direct.h
+check_headers dirent.h
+check_headers dxgidebug.h
+check_headers dxva.h
+check_headers dxva2api.h -D_WIN32_WINNT=0x0600
+check_headers io.h
+check_headers linux/perf_event.h
+check_headers libcrystalhd/libcrystalhd_if.h
+check_headers malloc.h
+check_headers mftransform.h
+check_headers net/udplite.h
+check_headers poll.h
+check_headers sys/param.h
+check_headers sys/resource.h
+check_headers sys/select.h
+check_headers sys/time.h
+check_headers sys/un.h
+check_headers termios.h
+check_headers unistd.h
+check_headers valgrind/valgrind.h
 check_func_headers VideoToolbox/VTCompressionSession.h VTCompressionSessionPrepareToEncodeFrames -framework VideoToolbox
 check_headers windows.h
 check_headers X11/extensions/XvMClib.h
