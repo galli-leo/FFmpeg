@@ -59,16 +59,26 @@ static int avgblur_opencl_init(AVFilterContext *avctx)
     ctx->command_queue = clCreateCommandQueue(ctx->ocf.hwctx->context,
                                               ctx->ocf.hwctx->device_id,
                                               0, &cle);
-    CL_FAIL_ON_ERROR(AVERROR(EIO), "Failed to create OpenCL "
-                     "command queue %d.\n", cle);
+    if (!ctx->command_queue) {
+        av_log(avctx, AV_LOG_ERROR, "Failed to create OpenCL "
+               "command queue: %d.\n", cle);
+        err = AVERROR(EIO);
+        goto fail;
+    }
 
     ctx->kernel_horiz = clCreateKernel(ctx->ocf.program,"avgblur_horiz", &cle);
-    CL_FAIL_ON_ERROR(AVERROR(EIO), "Failed to create horizontal "
-                     "kernel %d.\n", cle);
+    if (!ctx->kernel_horiz) {
+        av_log(avctx, AV_LOG_ERROR, "Failed to create kernel: %d.\n", cle);
+        err = AVERROR(EIO);
+        goto fail;
+    }
 
     ctx->kernel_vert = clCreateKernel(ctx->ocf.program,"avgblur_vert", &cle);
-    CL_FAIL_ON_ERROR(AVERROR(EIO), "Failed to create vertical "
-                     "kernel %d.\n", cle);
+    if (!ctx->kernel_vert) {
+        av_log(avctx, AV_LOG_ERROR, "Failed to create kernel: %d.\n", cle);
+        err = AVERROR(EIO);
+        goto fail;
+    }
 
     if (ctx->radiusV <= 0) {
         ctx->radiusV = ctx->radius;
@@ -204,37 +214,34 @@ static int avgblur_opencl_filter_frame(AVFilterLink *inlink, AVFrame *input)
             goto fail;
         }
 
-            cle = clEnqueueNDRangeKernel(ctx->command_queue, ctx->kernel_horiz, 2, NULL,
-                                         global_work, NULL,
-                                         0, NULL, NULL);
-            CL_FAIL_ON_ERROR(AVERROR(EIO), "Failed to enqueue horizontal "
-                             "kernel: %d.\n", cle);
-            cle = clFinish(ctx->command_queue);
+        err = ff_opencl_filter_work_size_from_image(avctx, global_work,
+                                                    output, p, 0);
+        if (err < 0)
+            goto fail;
 
         av_log(avctx, AV_LOG_DEBUG, "Run kernel on plane %d "
                "(%"SIZE_SPECIFIER"x%"SIZE_SPECIFIER").\n",
                p, global_work[0], global_work[1]);
 
-            CL_SET_KERNEL_ARG(ctx->kernel_vert, 0, cl_mem, &dst);
-            CL_SET_KERNEL_ARG(ctx->kernel_vert, 1, cl_mem, &inter);
-
-            if (!strcmp(avctx->filter->name, "avgblur_opencl")) {
-                CL_SET_KERNEL_ARG(ctx->kernel_vert, 2, cl_int, &radius_y);
-            } else if (!strcmp(avctx->filter->name, "boxblur_opencl")) {
-                CL_SET_KERNEL_ARG(ctx->kernel_vert, 2, cl_int, &ctx->radius[p]);
-            }
-
-            cle = clEnqueueNDRangeKernel(ctx->command_queue, ctx->kernel_vert, 2, NULL,
-                                         global_work, NULL,
-                                         0, NULL, NULL);
-            CL_FAIL_ON_ERROR(AVERROR(EIO), "Failed to enqueue vertical "
-                             "kernel: %d.\n", cle);
+        cle = clEnqueueNDRangeKernel(ctx->command_queue, ctx->kernel_vert, 2, NULL,
+                                     global_work, NULL,
+                                     0, NULL, NULL);
+        if (cle != CL_SUCCESS) {
+            av_log(avctx, AV_LOG_ERROR, "Failed to enqueue kernel: %d.\n",
+                   cle);
+            err = AVERROR(EIO);
+            goto fail;
         }
 
     }
 
     cle = clFinish(ctx->command_queue);
-    CL_FAIL_ON_ERROR(AVERROR(EIO), "Failed to finish command queue: %d.\n", cle);
+    if (cle != CL_SUCCESS) {
+        av_log(avctx, AV_LOG_ERROR, "Failed to finish command queue: %d.\n",
+               cle);
+        err = AVERROR(EIO);
+        goto fail;
+    }
 
     err = av_frame_copy_props(output, input);
     if (err < 0)

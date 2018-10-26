@@ -100,11 +100,19 @@ static int overlay_opencl_load(AVFilterContext *avctx,
     ctx->command_queue = clCreateCommandQueue(ctx->ocf.hwctx->context,
                                               ctx->ocf.hwctx->device_id,
                                               0, &cle);
-    CL_FAIL_ON_ERROR(AVERROR(EIO), "Failed to create OpenCL "
-                     "command queue %d.\n", cle);
+    if (!ctx->command_queue) {
+        av_log(avctx, AV_LOG_ERROR, "Failed to create OpenCL "
+               "command queue: %d.\n", cle);
+        err = AVERROR(EIO);
+        goto fail;
+    }
 
     ctx->kernel = clCreateKernel(ctx->ocf.program, kernel, &cle);
-    CL_FAIL_ON_ERROR(AVERROR(EIO), "Failed to create kernel %d.\n", cle);
+    if (!ctx->kernel) {
+        av_log(avctx, AV_LOG_ERROR, "Failed to create kernel: %d.\n", cle);
+        err = AVERROR(EIO);
+        goto fail;
+    }
 
     ctx->initialised = 1;
     return 0;
@@ -209,12 +217,21 @@ static int overlay_opencl_blend(FFFrameSync *fs)
 
         cle = clEnqueueNDRangeKernel(ctx->command_queue, ctx->kernel, 2, NULL,
                                      global_work, NULL, 0, NULL, NULL);
-        CL_FAIL_ON_ERROR(AVERROR(EIO), "Failed to enqueue overlay kernel "
-                         "for plane %d: %d.\n", plane, cle);
+        if (cle != CL_SUCCESS) {
+            av_log(avctx, AV_LOG_ERROR, "Failed to enqueue "
+                   "overlay kernel for plane %d: %d.\n", cle, plane);
+            err = AVERROR(EIO);
+            goto fail;
+        }
     }
 
     cle = clFinish(ctx->command_queue);
-    CL_FAIL_ON_ERROR(AVERROR(EIO), "Failed to finish command queue: %d.\n", cle);
+    if (cle != CL_SUCCESS) {
+        av_log(avctx, AV_LOG_ERROR, "Failed to finish "
+               "command queue: %d.\n", cle);
+        err = AVERROR(EIO);
+        goto fail;
+    }
 
     err = av_frame_copy_props(output, input_main);
 
