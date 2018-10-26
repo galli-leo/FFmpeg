@@ -874,13 +874,6 @@ do_check_deps(){
             enabled $dep && eval append ${cfg}_extralibs ${dep}_extralibs
         done
 
-            for dep in $dep_all $dep_any $dep_sel $dep_sgs; do
-                # filter out library deps, these do not belong in extralibs
-                is_in $dep $LIBRARY_LIST && continue
-                enabled $dep && eval append ${cfg}_extralibs ${dep}_extralibs
-            done
-        fi
-
         eval ${cfg}_checking=done
     done
 }
