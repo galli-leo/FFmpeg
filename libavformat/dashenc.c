@@ -137,7 +137,7 @@ typedef struct DASHContext {
     int streaming;
     int64_t timeout;
     int index_correction;
-    char *format_options_str;
+//    char *format_options_str; PLEX already has this
     SegmentType segment_type;
     const char *format_name;
 } DASHContext;
@@ -1074,14 +1074,14 @@ static int dash_init(AVFormatContext *s)
             return ret;
         av_dict_free(&opts);
         os->init_start_pos = 0;
-
+/* PLEX already has this
         if (c->format_options_str) {
             ret = av_dict_parse_string(&opts, c->format_options_str, "=", ":", 0);
             if (ret < 0)
                 return ret;
         }
-
-        if (!strcmp(os->format_name, "mp4")) {
+*/
+        if (c->segment_type == SEGMENT_TYPE_MP4) {
 //PLEX
             if (c->skip_to_segment > 1)
                 av_dict_set(&opts, "movflags", "frag_custom+dash+delay_moov+frag_discont", 0);
