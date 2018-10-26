@@ -622,8 +622,10 @@ static int h264_parse(AVCodecParserContext *s,
         s->pts_dts_delta     = INT_MIN;
     }
 
+/* Seems like this was removed?
     if (p->sei.a53_caption.a53_caption)
         avctx->properties |= FF_CODEC_PROPERTY_CLOSED_CAPTIONS;
+*/
 
     if (s->flags & PARSER_FLAG_ONCE) {
         s->flags &= PARSER_FLAG_COMPLETE_FRAMES;
